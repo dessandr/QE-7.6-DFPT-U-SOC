@@ -17,7 +17,7 @@ subroutine dgradcorr (dfft, rho, grho, dvxc_rr, dvxc_sr, dvxc_ss, &
   !
   USE kinds,            ONLY : DP
   USE noncollin_module, ONLY : noncolin, domag
-  USE gc_lr,            ONLY : gmag, vsgga, segni
+  USE gc_lr,            ONLY : vsgga, segni
   USE fft_types,        ONLY : fft_type_descriptor
   !
   IMPLICIT NONE
@@ -35,18 +35,17 @@ subroutine dgradcorr (dfft, rho, grho, dvxc_rr, dvxc_sr, dvxc_ss, &
 
   real(DP), parameter :: epsr = 1.0d-6, epsg = 1.0d-10
   real(DP) :: grho2, seg, seg0, amag
-  complex(DP) :: s1, fact, term
+  complex(DP) :: s1, term
   complex(DP) :: a (2, 2, 2), b (2, 2, 2, 2), c (2, 2, 2), &
                       ps (2, 2), ps1 (3, 2, 2), ps2 (3, 2, 2, 2)
   complex(DP), allocatable  :: gdrho (:,:,:), h (:,:,:), dh (:)
-  complex(DP), allocatable  :: gdmag (:,:,:), dvxcsave(:,:), vgg(:,:)
+  complex(DP), allocatable  :: dvxcsave(:,:), vgg(:,:)
   complex(DP), allocatable  :: drhoout(:,:)
   integer :: k, ipol, jpol, is, js, ks, ls
 
   IF ( nspin < nspin0 .OR. nspin < 1 .OR. nspin > 4 ) &
        CALL errore('dgradcorr', 'incorrect number of spin components',1)
   if (noncolin.and.domag) then
-     allocate (gdmag(3, dfft%nnr, nspin))
      allocate (dvxcsave(dfft%nnr, nspin))
      allocate (vgg(dfft%nnr, nspin0))
      dvxcsave=dvxc
@@ -59,16 +58,17 @@ subroutine dgradcorr (dfft, rho, grho, dvxc_rr, dvxc_sr, dvxc_ss, &
   
   h (:, :, :) = (0.d0, 0.d0)
   if (noncolin.and.domag) then
-     do is = 1, nspin
-        call fft_qgradient (dfft, drho(1,is), xq, g, gdmag (1, 1, is) )
-     enddo
+     !
+     ! drhoout = delta(rho +- s|m|)/2, s = segni. Its gradient is taken by
+     ! FFT, as PW gradcorr does for the gradient of rho +- s|m| (compute_rho),
+     ! so that this is the derivative of the discretised v_xc. The chain
+     ! rule s*grad(m.drho/|m|) with FFT gradients of m and drho differs from
+     ! it on the grid, most where m.ux changes sign under a canted moment.
+     !
      DO is=1,nspin0
         IF (is==1) seg0=0.5_dp
         IF (is==2) seg0=-0.5_dp
         drhoout(:,is) = 0.5_dp*drho(:,1)
-        DO ipol=1,3
-           gdrho(ipol,:,is) = 0.5_dp*gdmag(ipol,:,1)
-        ENDDO
         DO k=1,dfft%nnr
            seg=seg0*segni(k)
            amag=sqrt(rho(k,2)**2+rho(k,3)**2+rho(k,4)**2)
@@ -77,20 +77,9 @@ subroutine dgradcorr (dfft, rho, grho, dvxc_rr, dvxc_sr, dvxc_ss, &
                  drhoout(k,is) = drhoout(k,is)+seg*rho(k,jpol)* &
                                                  drho(k,jpol)/amag
               END DO
-              DO ipol=1,3
-                 fact=(0.0_dp,0.0_dp)
-                 DO jpol=2,4
-                    fact=fact+rho(k,jpol)*drho(k,jpol)
-                 END DO
-                 DO jpol=2,4
-                    gdrho(ipol,k,is) = gdrho(ipol,k,is)+ seg*( &
-                        drho(k,jpol)*gmag(ipol,k,jpol)+ &
-                        rho(k,jpol)*gdmag(ipol,k,jpol))/amag &
-                        -seg*(rho(k,jpol)*gmag(ipol,k,jpol)*fact)/amag**3
-                 END DO
-              END DO
            END IF
         END DO
+        CALL fft_qgradient (dfft, drhoout(1,is), xq, g, gdrho (1, 1, is) )
      END DO
   ELSE
      !
@@ -228,7 +217,6 @@ subroutine dgradcorr (dfft, rho, grho, dvxc_rr, dvxc_sr, dvxc_ss, &
   deallocate (gdrho)
   deallocate (drhoout)
   if (noncolin.and.domag) then
-     deallocate (gdmag)
      deallocate (dvxcsave)
      deallocate (vgg)
   endif

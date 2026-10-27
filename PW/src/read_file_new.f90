@@ -252,8 +252,8 @@ SUBROUTINE post_xml_init (  )
   USE control_flags,        ONLY : ts_vdw, tqr, tq_smoothing, tbeta_smoothing
   USE cellmd,               ONLY : cell_factor, lmovecell
   USE wvfct,                ONLY : nbnd, nbndx, et, wg
-  USE lsda_mod,             ONLY : nspin
-  USE noncollin_module,     ONLY : noncolin, lspinorb, domag
+  USE lsda_mod,             ONLY : nspin, starting_magnetization
+  USE noncollin_module,     ONLY : noncolin, lspinorb, domag, angle1, angle2, ux
   USE cell_base,            ONLY : at, bg, set_h_ainv
   USE symm_base,            ONLY : d1, d2, d3
   USE mp_bands,             ONLY : intra_bgrp_comm
@@ -274,7 +274,8 @@ SUBROUTINE post_xml_init (  )
   !
   REAL(DP) :: ehart, etxc, vtxc, etotefield, charge, qmax
   CHARACTER(LEN=37) :: dft_name
-  INTEGER :: ierr
+  INTEGER :: ierr, na
+  REAL(DP), ALLOCATABLE :: mloc(:,:)
   !
   ! ... initialize Libxc if needed
   !
@@ -398,6 +399,25 @@ SUBROUTINE post_xml_init (  )
      !CALL infomsg('read_file_new','*** vdW-TS term will be missing in potential ***')
      !ts_vdw = .false.
   END IF
+  !
+  ! ... fixed quantization axis of the noncollinear GGA (lsign, ux), as set
+  ! ... by setup in the pw.x run that produced rho: without it v_of_rho uses
+  ! ... |m| instead of sign(m.ux)|m| and gives a different B_xc
+  !
+  IF ( noncolin .AND. domag .AND. xclib_dft_is('gradient') ) THEN
+     ALLOCATE( mloc(3,nat) )
+     DO na = 1, nat
+        mloc(1,na) = starting_magnetization(ityp(na)) * &
+                     SIN( angle1(ityp(na)) ) * COS( angle2(ityp(na)) )
+        mloc(2,na) = starting_magnetization(ityp(na)) * &
+                     SIN( angle1(ityp(na)) ) * SIN( angle2(ityp(na)) )
+        mloc(3,na) = starting_magnetization(ityp(na)) * &
+                     COS( angle1(ityp(na)) )
+     END DO
+     ux = 0.0_DP
+     CALL compute_ux( mloc, ux, nat )
+     DEALLOCATE( mloc )
+  ENDIF
   !
   CALL v_of_rho( rho, rho_core, rhog_core, tau_core, &
        ehart, etxc, vtxc, eth, etotefield, charge, v )
