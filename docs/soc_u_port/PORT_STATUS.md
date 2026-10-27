@@ -548,3 +548,8 @@ Fixture: new optional SOC_U_NIO_ECUTWFC and SOC_U_NIO_K (defaults unchanged).
   with frozen-phonon FD to ~1e-3; restart and MPI layout verified. Open:
   Born charges (to be handled with zasr post-processing), qe2pert port,
   joint-mixer stagnation of the Hubbard block (workaround hubbard_conv_thr).
+- Gamma at k 3x3x3 (job 883) vs the N=3 supercell FD (m=0): Ni1 column
+  2.5e-3, O1 column 6.9e-3, the same level as q = b1/3.
+- 2026-10-27: committed on branch soc-u-port (9ad5313 port, 20a3e47
+  noncollinear GGA fixes, fc3a8b4 tools/docs) and pushed with the pristine
+  baseline main to github.com:dessandr/QE-7.6-DFPT-U-SOC (user request).
