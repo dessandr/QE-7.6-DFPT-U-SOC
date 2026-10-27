@@ -7,7 +7,7 @@
 !
 !-----------------------------------------------------------------------
 subroutine rotate_and_add_dyn (phi, phi2, nat, isym, s, invs, irt, &
-     rtau, sxq)
+     rtau, sxq, antiunitary)
   !-----------------------------------------------------------------------
   !! Rotates a dynamical matrix (\(\text{phi}\)) in crystal coordinates
   !! according to the specified symmetry operation and add the rotated
@@ -37,6 +37,8 @@ subroutine rotate_and_add_dyn (phi, phi2, nat, isym, s, invs, irt, &
   !! for eaxh atom and rotation gives the R vector involved
   real(DP) :: sxq(3)
   !! the rotated q involved in this sym.op.
+  logical, intent(in) :: antiunitary
+  !! if true, conjugate the source tensor but retain the target-q phase
   !
   ! ... local variables
   !
@@ -47,7 +49,7 @@ subroutine rotate_and_add_dyn (phi, phi2, nat, isym, s, invs, irt, &
   ! generic counters
   real(DP) :: arg
   ! argument of the phase
-  complex(DP) :: phase, work
+  complex(DP) :: phase, work, phi_element
 
 
   ism1 = invs (isym)
@@ -64,8 +66,10 @@ subroutine rotate_and_add_dyn (phi, phi2, nat, isym, s, invs, irt, &
               work = CMPLX(0.d0, 0.d0,kind=DP)
               do k = 1, 3
                  do l = 1, 3
-                    work = work + s (i, k, ism1) * s (j, l, ism1) * phi (k, l, na, nb) &
-                         * phase
+                    phi_element = phi (k, l, na, nb)
+                    if (antiunitary) phi_element = CONJG(phi_element)
+                    work = work + s (i, k, ism1) * s (j, l, ism1) * &
+                         phi_element * phase
                  enddo
               enddo
               phi2 (i, j, sna, snb) = phi2 (i, j, sna, snb) + work

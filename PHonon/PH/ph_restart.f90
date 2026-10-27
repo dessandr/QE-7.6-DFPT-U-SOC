@@ -29,15 +29,198 @@ MODULE ph_restart
   !
   PUBLIC :: ph_writefile, ph_readfile, allocate_grid_variables, &
        check_directory_phsave, destroy_status_run, check_available_bands, &
-       read_disp_pattern_only
+       read_disp_pattern_only, ph_hubbard_checkpoint_begin
   !
   INTEGER :: iunpun
+  ! Cached once per q by phqscf, not once per irrep. This fingerprints the
+  ! text SCF schema; binary density files are not passed to md5_from_file.
+  CHARACTER(len=32) :: hub_scf_schema_md5 = ''
   !
   ! FIXME: obsolete variables?
   CHARACTER(len=256) :: qexml_version = ' '
   LOGICAL :: qexml_version_init = .FALSE.
   !
   CONTAINS
+    !
+    SUBROUTINE ph_hubbard_checkpoint_begin()
+      ! Reuse QE's text-file checksum, and the original SCF save rather than
+      ! the q-dependent NSCF XML whose serialization can change on recovery.
+      USE clib_wrappers, ONLY : md5_from_file
+      USE io_files, ONLY : xmlpun_schema
+      USE save_ph, ONLY : tmp_dir_save
+      USE io_global, ONLY : stdout
+      IMPLICIT NONE
+      CHARACTER(len=1024) :: filename
+      INTEGER :: file_size, ios
+      LOGICAL :: exists
+      hub_scf_schema_md5 = ''
+      IF (ionode) THEN
+         filename = TRIM(tmp_dir_save)//TRIM(prefix)//'.save/'//xmlpun_schema
+         exists = .FALSE.
+         file_size = -1
+         INQUIRE(FILE=TRIM(filename), EXIST=exists, SIZE=file_size, IOSTAT=ios)
+         IF (ios == 0 .AND. exists) THEN
+            IF (file_size > 0) CALL md5_from_file(TRIM(filename), hub_scf_schema_md5)
+         ENDIF
+         IF (VERIFY(hub_scf_schema_md5, '0123456789abcdef') /= 0) hub_scf_schema_md5 = ''
+         IF (LEN_TRIM(hub_scf_schema_md5) == 0) WRITE(stdout,'(5x,a)') &
+              'SOC_U_DNSSCF_CHECKPOINT_UNAVAILABLE: original SCF schema cannot be fingerprinted'
+      ENDIF
+      CALL mp_bcast(hub_scf_schema_md5, ionode_id, intra_image_comm)
+    END SUBROUTINE ph_hubbard_checkpoint_begin
+    !
+    FUNCTION hubbard_checkpoint_layout(iq, irr) RESULT(layout)
+      USE ions_base, ONLY : nat
+      USE ldaU, ONLY : Hubbard_lmax
+      USE lsda_mod, ONLY : nspin
+      USE modes, ONLY : npert
+      USE qpoint, ONLY : nksqtot
+      USE wvfct, ONLY : nbnd
+      USE noncollin_module, ONLY : npol, domag, lspinorb
+      IMPLICIT NONE
+      INTEGER, INTENT(IN) :: iq, irr
+      REAL(DP) :: layout(12)
+      ! Version, q/irrep identity, dimensions, pattern offset, electronic mesh
+      ! size and spin flags. The schema checksum includes cell/species/U input.
+      layout = REAL([1, iq, irr, 2*Hubbard_lmax+1, nspin, nat, &
+           SUM(npert(1:irr-1)), npert(irr), nksqtot, nbnd, npol, &
+           MERGE(1,0,domag) + 2*MERGE(1,0,lspinorb)], DP)
+    END FUNCTION hubbard_checkpoint_layout
+    !
+    SUBROUTINE write_hubbard_checkpoint(irr)
+      ! Keep the response and DONE_IRR in the same existing per-irrep XML.
+      ! A flat all-mode export is not itself a recovery checkpoint.
+      USE ldaU, ONLY : lda_plus_u
+      USE ldaU_ph, ONLY : dnsscf_all_modes
+      USE noncollin_module, ONLY : noncolin
+      USE modes, ONLY : u, npert
+      USE qpoint, ONLY : xq
+      USE control_ph, ONLY : current_iq
+      USE scf, ONLY : rho
+      USE ions_base, ONLY : ntyp => nsp
+      USE uspp_param, ONLY : upf
+      IMPLICIT NONE
+      INTEGER, INTENT(IN) :: irr
+      INTEGER :: first, last, nvalue, nt
+      IF (.NOT.lda_plus_u .OR. .NOT.noncolin) RETURN
+      IF (.NOT.ALLOCATED(dnsscf_all_modes) .OR. .NOT.ALLOCATED(rho%ns_nc)) RETURN
+      IF (LEN_TRIM(hub_scf_schema_md5) == 0) RETURN
+      first = SUM(npert(1:irr-1)) + 1
+      last = first + npert(irr) - 1
+      CALL xmlw_opentag('HUBBARD_RESPONSE')
+      CALL xmlw_writetag('SCF_SCHEMA_MD5', hub_scf_schema_md5)
+      DO nt = 1, ntyp
+         CALL xmlw_writetag('PSEUDO_MD5.'//i2c(nt), upf(nt)%md5_cksum)
+      ENDDO
+      CALL xmlw_writetag('LAYOUT', hubbard_checkpoint_layout(current_iq, irr))
+      CALL xmlw_writetag('Q_VECTOR', xq)
+      CALL xmlw_writetag('PATTERNS', RESHAPE(u(:,first:last), [SIZE(u,1)*npert(irr)]))
+      CALL xmlw_writetag('GROUND_NS', RESHAPE(rho%ns_nc, [SIZE(rho%ns_nc)]))
+      nvalue = SIZE(dnsscf_all_modes(:,:,:,:,first:last))
+      CALL xmlw_writetag('DNSSCF', RESHAPE(dnsscf_all_modes(:,:,:,:,first:last), [nvalue]))
+      CALL xmlw_writetag('RESPONSE_COMPLETE', 'true')
+      CALL xmlw_closetag()
+    END SUBROUTINE write_hubbard_checkpoint
+    !
+    SUBROUTINE read_hubbard_checkpoint(iq, irr, ierr)
+      ! A successful read restores one *complete* mode slice, without changing
+      ! its phase, spin blocks, symmetry or the existing recovered dyn_rec.
+      USE ldaU_ph, ONLY : dnsscf_all_modes
+      USE modes, ONLY : u, npert
+      USE qpoint, ONLY : xq
+      USE scf, ONLY : rho
+      USE ions_base, ONLY : ntyp => nsp
+      USE uspp_param, ONLY : upf
+      USE, INTRINSIC :: ieee_arithmetic, ONLY : ieee_is_finite
+      IMPLICIT NONE
+      INTEGER, INTENT(IN) :: iq, irr
+      INTEGER, INTENT(OUT) :: ierr
+      INTEGER :: first, last, nvalue, ios, nt
+      CHARACTER(len=32) :: schema_md5, complete, pseudo_md5
+      COMPLEX(DP), ALLOCATABLE :: response(:)
+      ierr = 1
+      first = SUM(npert(1:irr-1)) + 1
+      last = first + npert(irr) - 1
+      IF (ionode) THEN
+         CALL xmlr_opentag('HUBBARD_RESPONSE', ios)
+         IF (ios == 0) THEN
+            IF (.NOT.ALLOCATED(dnsscf_all_modes) .OR. .NOT.ALLOCATED(rho%ns_nc)) GOTO 900
+            IF (LEN_TRIM(hub_scf_schema_md5) == 0) GOTO 900
+            CALL xmlr_readtag('SCF_SCHEMA_MD5', schema_md5, ios)
+            IF (ios /= 0 .OR. schema_md5 /= hub_scf_schema_md5) GOTO 900
+            DO nt = 1, ntyp
+               CALL xmlr_readtag('PSEUDO_MD5.'//i2c(nt), pseudo_md5, ios)
+               IF (ios /= 0 .OR. pseudo_md5 /= upf(nt)%md5_cksum) GOTO 900
+               IF (VERIFY(pseudo_md5, '0123456789abcdef') /= 0) GOTO 900
+            ENDDO
+            IF (.NOT.match_real('LAYOUT', hubbard_checkpoint_layout(iq, irr), .TRUE.)) GOTO 900
+            IF (.NOT.match_real('Q_VECTOR', xq, .FALSE.)) GOTO 900
+            IF (.NOT.match_complex('PATTERNS', RESHAPE(u(:,first:last), &
+                                   [SIZE(u,1)*npert(irr)]))) GOTO 900
+            IF (.NOT.match_complex('GROUND_NS', RESHAPE(rho%ns_nc, [SIZE(rho%ns_nc)]))) GOTO 900
+            nvalue = SIZE(dnsscf_all_modes(:,:,:,:,first:last))
+            ALLOCATE(response(nvalue))
+            CALL read_complex('DNSSCF', response, ios)
+            IF (ios /= 0) GOTO 900
+            CALL xmlr_readtag('RESPONSE_COMPLETE', complete, ios)
+            IF (ios /= 0 .OR. TRIM(complete) /= 'true') GOTO 900
+            dnsscf_all_modes(:,:,:,:,first:last) = &
+                 RESHAPE(response, SHAPE(dnsscf_all_modes(:,:,:,:,first:last)))
+            ierr = 0
+900         IF (ALLOCATED(response)) DEALLOCATE(response)
+            CALL xmlr_closetag()
+         ENDIF
+      ENDIF
+      CALL mp_bcast(ierr, ionode_id, intra_image_comm)
+      IF (ierr == 0) CALL mp_bcast(dnsscf_all_modes(:,:,:,:,first:last), ionode_id, intra_image_comm)
+      !
+    CONTAINS
+      LOGICAL FUNCTION match_real(tag, expected, exact)
+        CHARACTER(len=*), INTENT(IN) :: tag
+        REAL(DP), INTENT(IN) :: expected(:)
+        LOGICAL, INTENT(IN) :: exact
+        REAL(DP) :: stored(SIZE(expected)), tolerance
+        INTEGER :: status
+        stored = 0.0_DP
+        CALL xmlr_readtag(tag, stored, status)
+        match_real = .FALSE.
+        IF (status /= 0 .OR. .NOT.ALL(ieee_is_finite(stored))) RETURN
+        IF (.NOT.ALL(ieee_is_finite(expected))) RETURN
+        tolerance = 1.0e-12_DP * MAX(1.0_DP, MAXVAL(ABS(expected)))
+        IF (exact) tolerance = 0.0_DP
+        match_real = MAXVAL(ABS(stored - expected)) <= tolerance
+      END FUNCTION match_real
+      !
+      SUBROUTINE read_complex(tag, values, status)
+        ! xmltools writes complex vectors as interleaved reals. Reading as a
+        ! real vector uses its IOSTAT path, so truncation is a failed restore.
+        CHARACTER(len=*), INTENT(IN) :: tag
+        COMPLEX(DP), INTENT(OUT) :: values(:)
+        INTEGER, INTENT(OUT) :: status
+        REAL(DP) :: data(2*SIZE(values))
+        CALL xmlr_readtag(tag, data, status)
+        IF (status /= 0) RETURN
+        IF (.NOT.ALL(ieee_is_finite(data))) THEN
+           status = 1
+           RETURN
+        ENDIF
+        values = CMPLX(data(1::2), data(2::2), KIND=DP)
+      END SUBROUTINE read_complex
+      !
+      LOGICAL FUNCTION match_complex(tag, expected)
+        CHARACTER(len=*), INTENT(IN) :: tag
+        COMPLEX(DP), INTENT(IN) :: expected(:)
+        COMPLEX(DP) :: stored(SIZE(expected))
+        INTEGER :: status
+        CALL read_complex(tag, stored, status)
+        match_complex = .FALSE.
+        IF (status /= 0) RETURN
+        IF (.NOT.ALL(ieee_is_finite(REAL(expected,DP))) .OR. &
+            .NOT.ALL(ieee_is_finite(AIMAG(expected)))) RETURN
+        match_complex = MAXVAL(ABS(stored - expected)) <= &
+             1.0e-12_DP * MAX(1.0_DP, MAXVAL(ABS(expected)))
+      END FUNCTION match_complex
+    END SUBROUTINE read_hubbard_checkpoint
     !
     !------------------------------------------------------------------------
     SUBROUTINE ph_writefile( what, iq, irr, ierr )
@@ -289,6 +472,7 @@ MODULE ph_restart
                  IF ( zue .and. irr>0 ) &
                       CALL xmlw_writetag( "PARTIAL_ZUE", zstarue0_rec(:,:))
                  CALL xmlw_closetag( )
+                 IF (irr > 0) CALL write_hubbard_checkpoint(irr)
               ENDIF
            ENDIF
            RETURN
@@ -492,6 +676,13 @@ MODULE ph_restart
          !
          CALL read_partial_ph( irr, ierr )
          IF ( ierr /= 0 ) RETURN
+         !
+      CASE( 'data_hub' )
+         ! Read only the response associated with the same completed-irrep
+         ! checkpoint. Do not replace done_irr or the recovered dynamical matrix.
+         CALL read_hubbard_checkpoint( iq, irr, ierr )
+         ! Unlike legacy readers, a missing response is an expected result.
+         ! Always close the file, including an incompatible old checkpoint.
          !
       CASE( 'el_phon' )
          !
@@ -1338,7 +1529,7 @@ MODULE ph_restart
          ELSEIF (what=='data_u') THEN
             filename= TRIM( dirname ) // 'patterns.' // &
                       TRIM(int_to_char(current_iq)) // '.xml'
-         ELSEIF (what=='data_dyn') THEN
+         ELSEIF (what=='data_dyn' .OR. what=='data_hub') THEN
             filename= TRIM( dirname ) // 'dynmat.' // &
                       TRIM(int_to_char(current_iq)) // '.' //  &
                       TRIM(int_to_char(irr)) // '.xml'

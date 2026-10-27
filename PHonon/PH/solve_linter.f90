@@ -49,6 +49,7 @@ SUBROUTINE solve_linter (irr, imode0, dfpt_data)
   USE paw_onecenter,        ONLY : paw_dpotential
   USE buffers,              ONLY : save_buffer, get_buffer
   USE ldaU,                 ONLY : lda_plus_u
+  USE ldaU_lr,              ONLY : hub_bare_time_reversed, hub_bare_oracle
   USE control_ph,           ONLY : ext_recover, lmultipole
   USE el_phon,              ONLY : elph
   USE uspp,                 ONLY : nlcc_any
@@ -191,6 +192,9 @@ SUBROUTINE solve_linter (irr, imode0, dfpt_data)
            mode = imode0 + ipert
            nrec = (isolv-1) * npe * nksq + (ipert - 1) * nksq + ik
            !
+           ! DFPT+U: dvqpsi_us adds the bare Hubbard term; for noncollinear
+           ! runs select its branch and request the iverbosity=1 checks.
+           hub_bare_oracle = .TRUE.
            IF (isolv==1) THEN
               !
               CALL dvqpsi_us(ik, u(1, mode), .FAlSE., becp1, alphap)
@@ -201,13 +205,17 @@ SUBROUTINE solve_linter (irr, imode0, dfpt_data)
                  !$acc update device(deeq_nc)
                  int1_nc(:,:,:,:,:) = int1_nc_save(:,:,:,:,:,2)
               ENDIF
+              hub_bare_time_reversed = .TRUE.
               CALL dvqpsi_us(ik, u(1, mode), .FAlSE., becpt, alphapt)
+              hub_bare_time_reversed = .FALSE.
               IF (okvan) THEN
                  deeq_nc(:,:,:,:) = deeq_nc_save(:,:,:,:,1)
                  !$acc update device(deeq_nc)
                  int1_nc(:,:,:,:,:) = int1_nc_save(:,:,:,:,:,1)
               ENDIF
            ENDIF
+           !
+           hub_bare_oracle = .FALSE.
            !
            CALL save_buffer(dvpsi, lrbar, iubar, nrec)
            !

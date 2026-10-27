@@ -23,13 +23,14 @@ SUBROUTINE force_hub( forceh )
                                     nwfcU, wfcU, is_hubbard, lda_plus_u_kind,    &
                                     offsetU, is_hubbard_back, ldim_back, ldmx_b, &
                                     ldmx_tot, v_nsg, max_num_neighbors,     &
-                                    ldim_u, Hubbard_V, at_sc, neighood, Hubbard_J
+                                    ldim_u, Hubbard_V, at_sc, neighood, Hubbard_J, &
+                                    Hubbard_U, Hubbard_J0
    USE basis,                ONLY : natomwfc, wfcatom, swfcatom
    USE symme,                ONLY : symvector
    USE wvfct,                ONLY : nbnd, npwx
-   USE control_flags,        ONLY : gamma_only, offload_type
+   USE control_flags,        ONLY : gamma_only, offload_type, iverbosity
    USE lsda_mod,             ONLY : lsda, nspin, current_spin, isk
-   USE scf,                  ONLY : v
+   USE scf,                  ONLY : rho, v
    USE becmod,               ONLY : bec_type, becp, calbec, allocate_bec_type_acc, &
                                     deallocate_bec_type_acc
    USE uspp,                 ONLY : nkb, vkb, ofsbeta
@@ -43,6 +44,7 @@ SUBROUTINE force_hub( forceh )
    USE force_mod,            ONLY : eigenval, eigenvect, overlap_inv
    USE uspp_init,            ONLY : init_us_2
    USE mp_bands,             ONLY : intra_bgrp_comm
+   USE io_global,            ONLY : stdout, ionode
    USE constants,            ONLY : eps16
    USE mp_pools,             ONLY : inter_pool_comm, intra_pool_comm, me_pool, &
                                     nproc_pool
@@ -60,13 +62,16 @@ SUBROUTINE force_hub( forceh )
    COMPLEX(DP), ALLOCATABLE :: spsi(:,:)
    REAL(DP), ALLOCATABLE :: dns(:,:,:,:), dnsb(:,:,:,:)
    COMPLEX (DP), ALLOCATABLE ::  dns_nc(:,:,:,:)
+   COMPLEX(DP), ALLOCATABLE :: dns_nc_bare_oracle(:,:,:,:,:,:)
    COMPLEX (DP), ALLOCATABLE ::  dnsg(:,:,:,:,:)
    ! dns(ldim,ldim,nspin,nat) ! the derivative of the atomic occupations
    INTEGER :: npw, alpha, na, nt, is, is2, m1, m2, ipol, ldim, ik, ijkb0
+   INTEGER :: iblock, jblock
    INTEGER :: na1, na2, equiv_na2, nt1, nt2, ldim1, ldim2, viz
    INTEGER :: nb_s, nb_e, mykey, ldimb, ierr
    LOGICAL :: lhubb
    LOGICAL :: save_flag
+   LOGICAL :: write_nc_oracle
    INTEGER, EXTERNAL :: find_viz
    !
    !
@@ -74,6 +79,7 @@ SUBROUTINE force_hub( forceh )
    !
    !$acc data  present(vkb,wfcU) 
    save_flag = use_bgrp_in_hpsi ; use_bgrp_in_hpsi = .FALSE.
+   write_nc_oracle = noncolin .AND. lda_plus_u_kind == 0 .AND. iverbosity == 1
    !
    IF (.NOT.((Hubbard_projectors.EQ."atomic") .OR. (Hubbard_projectors.EQ."ortho-atomic"))) &
       CALL errore( "force_hub", &
@@ -88,6 +94,10 @@ SUBROUTINE force_hub( forceh )
       ldim = 2*Hubbard_lmax + 1
       IF (noncolin) then
          ALLOCATE ( dns_nc(ldim, ldim, nspin, nat) ) 
+         IF (write_nc_oracle) THEN
+            ALLOCATE(dns_nc_bare_oracle(ldim,ldim,nspin,nat,3,nat))
+            dns_nc_bare_oracle = (0.0_DP, 0.0_DP)
+         ENDIF
       ELSE        
          ALLOCATE ( dns(ldim, ldim, nspin, nat) )
       ENDIF
@@ -191,7 +201,28 @@ SUBROUTINE force_hub( forceh )
                !
                IF (noncolin) THEN  
                   CALL dndtau_k_nc ( ldim, proj%k, spsi, alpha, ijkb0, ipol, ik, &
-                                      nb_s, nb_e, mykey, 1, dns_nc )                  
+                                      nb_s, nb_e, mykey, 1, dns_nc )
+                  IF (write_nc_oracle) THEN
+                     DO na = 1, nat
+                        nt = ityp(na)
+                        IF (is_hubbard(nt)) THEN
+                           ldim1 = 2 * Hubbard_l(nt) + 1
+                           DO is = 1, npol
+                              DO is2 = 1, npol
+                                 iblock = npol * (is - 1) + is2
+                                 jblock = npol * (is2 - 1) + is
+                                 DO m2 = 1, ldim1
+                                    DO m1 = 1, ldim1
+                                       dns_nc_bare_oracle(m1,m2,iblock,na,ipol,alpha) = &
+                                            dns_nc_bare_oracle(m1,m2,iblock,na,ipol,alpha) + &
+                                            dns_nc(m2,m1,jblock,na)
+                                    ENDDO
+                                 ENDDO
+                              ENDDO
+                           ENDDO
+                        ENDIF
+                     ENDDO
+                  ENDIF
                   DO na = 1, nat
                      nt = ityp(na)
                      IF ( is_hubbard(nt) ) THEN
@@ -332,13 +363,73 @@ SUBROUTINE force_hub( forceh )
       !
    ENDDO ! ik
    !
+   IF (write_nc_oracle) &
+      CALL mp_sum(dns_nc_bare_oracle, inter_pool_comm)
+   !
    CALL mp_sum( forceh, inter_pool_comm )
+   !
+   IF (write_nc_oracle .AND. ionode) THEN
+      WRITE(stdout,'(/,"SOC_U_ORACLE_BEGIN")')
+      DO na = 1, nat
+         nt = ityp(na)
+         IF (is_hubbard(nt)) THEN
+            ldim1 = 2 * Hubbard_l(nt) + 1
+            WRITE(stdout,'("SOC_U_ORACLE_META",3(1x,i0),1x,es24.16)') &
+                 na, ldim1, npol, Hubbard_U(nt) - Hubbard_J0(nt)
+            DO is = 1, npol
+               DO is2 = 1, npol
+                  iblock = npol * (is - 1) + is2
+                  DO m2 = 1, ldim1
+                     DO m1 = 1, ldim1
+                        WRITE(stdout,'("SOC_U_ORACLE_NS",5(1x,i0),2(1x,es24.16))') &
+                             na, is, is2, m1, m2, &
+                             REAL(rho%ns_nc(m1,m2,iblock,na),DP), &
+                             AIMAG(rho%ns_nc(m1,m2,iblock,na))
+                        WRITE(stdout,'("SOC_U_ORACLE_V",5(1x,i0),2(1x,es24.16))') &
+                             na, is, is2, m1, m2, &
+                             REAL(v%ns_nc(m1,m2,iblock,na),DP), &
+                             AIMAG(v%ns_nc(m1,m2,iblock,na))
+                     ENDDO
+                  ENDDO
+               ENDDO
+            ENDDO
+         ENDIF
+      ENDDO
+      DO alpha = 1, nat
+         DO ipol = 1, 3
+            DO na = 1, nat
+               nt = ityp(na)
+               IF (is_hubbard(nt)) THEN
+                  ldim1 = 2 * Hubbard_l(nt) + 1
+                  DO is = 1, npol
+                     DO is2 = 1, npol
+                        iblock = npol * (is - 1) + is2
+                        DO m2 = 1, ldim1
+                           DO m1 = 1, ldim1
+                              WRITE(stdout, &
+                                   '("SOC_U_ORACLE_DNS_BARE",7(1x,i0),2(1x,es24.16))') &
+                                   alpha, ipol, na, is, is2, m1, m2, &
+                                   REAL(dns_nc_bare_oracle( &
+                                        m1,m2,iblock,na,ipol,alpha),DP), &
+                                   AIMAG(dns_nc_bare_oracle( &
+                                        m1,m2,iblock,na,ipol,alpha))
+                           ENDDO
+                        ENDDO
+                     ENDDO
+                  ENDDO
+               ENDIF
+            ENDDO
+         ENDDO
+      ENDDO
+      WRITE(stdout,'("SOC_U_ORACLE_END",/)')
+   ENDIF
    !
    CALL deallocate_bec_type_acc( proj )
    !
    IF (lda_plus_u_kind.EQ.0) THEN
       IF (noncolin) THEN
          DEALLOCATE(dns_nc)
+         IF (ALLOCATED(dns_nc_bare_oracle)) DEALLOCATE(dns_nc_bare_oracle)
       ELSE        
          DEALLOCATE(dns)
       ENDIF   

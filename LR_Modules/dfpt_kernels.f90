@@ -11,7 +11,8 @@ MODULE dfpt_kernels
 IMPLICIT NONE
 CONTAINS
 SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
-                       irr, imode0, write_rec_callback, stop_callback, w_freq)
+                       irr, imode0, write_rec_callback, stop_callback, w_freq, &
+                       single_branch)
    !------------------------------------------------------------------------------
    !! Driver routine for the solution of the linear system that computes the change
    !! of the electron density due to a generic perturbation to the Hamiltonian.
@@ -89,15 +90,19 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
    USE fft_base,             ONLY : dfftp, dffts
    USE fft_interfaces,       ONLY : fft_interpolate
    USE buffers,              ONLY : get_buffer
-   USE ions_base,            ONLY : nat
-   USE io_global,            ONLY : stdout
+   USE ions_base,            ONLY : nat, ityp
+   USE io_global,            ONLY : stdout, ionode
    USE io_files,             ONLY : diropn
    USE check_stop,           ONLY : check_stop_now
    USE klist,                ONLY : ltetra, lgauss
    USE gvecs,                ONLY : doublegrid
    USE lsda_mod,             ONLY : nspin, lsda
    USE scf,                  ONLY : rho
-   USE ldaU,                 ONLY : lda_plus_u
+   USE ldaU,                 ONLY : lda_plus_u, is_hubbard, Hubbard_l
+   USE ldaU_lr,              ONLY : dnsscf, effU, hub_dnsq_single_branch, hubbard_conv, &
+                                    hubbard_conv_thr
+   USE hubbard_response_mixing, ONLY : mix_hubbard_response
+   USE control_flags,        ONLY : iverbosity
    USE uspp,                 ONLY : okvan
    USE uspp_param,           ONLY : nhm
    USE noncollin_module,     ONLY : noncolin, domag, npol, nspin_mag
@@ -144,6 +149,10 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
    !! Callback subroutine for graceful stop
    COMPLEX(DP), INTENT(IN), OPTIONAL :: w_freq
    !! Frequency for finite-frequency DFPT.
+   LOGICAL, INTENT(IN), OPTIONAL :: single_branch
+   !! Noncollinear magnetic DFPT+U, static electric field: solve only the +B
+   !! system and add the time-reversed partner of the Hubbard occupation
+   !! response as an adjoint term (QE 7.3 implementation).
    !
    INTEGER, INTENT(IN) :: irr
    !! input: the irreducible representation (to be removed after moving from PH to LR_Modules)
@@ -186,6 +195,25 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
    REAL(DP) :: tcpu, get_clock
    !! timing variables
    !
+   ! Noncollinear magnetic DFPT+U (lhubbard_soc): joint Hxc + Hubbard
+   ! response mixing and optional Sternheimer threshold overrides
+   LOGICAL :: joint_hubbard, hubbard_convt
+   LOGICAL :: first_iter_threshold_active, all_iter_threshold_active
+   INTEGER :: mix_iter
+   !! counter of the current mixing-history cycle (equal to iter unless the
+   !! joint Hubbard mixing cold-starts it)
+   INTEGER :: mixing_na
+   REAL(DP) :: thresh_adaptive, thresh_before_cap
+   REAL(DP) :: first_iter_threshold, all_iter_threshold
+   REAL(DP) :: mixing_grid_size, mix_metric_info(3)
+   REAL(DP) :: dnsscf_refresh_residual, dnsscf_final_scale, dnsscf_refresh_relative
+   REAL(DP) :: dnsscf_convergence_threshold, hub_pot_residual
+   CHARACTER(LEN=24) :: joint_cg_mode
+   COMPLEX(DP), ALLOCATABLE :: dnsscf_input(:,:,:,:,:)
+   !! mixed Hubbard occupation response used as the input of the next solve
+   REAL(DP), ALLOCATABLE :: mixing_ueff(:)
+   INTEGER, ALLOCATABLE :: mixing_ldim(:)
+   !
    !  This routine is task group aware
    !
    CALL start_clock('dfpt_kernel')
@@ -194,6 +222,15 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
    !
    nsolv = 1
    IF ((noncolin .AND. domag) .OR. finite_freq) nsolv = 2
+   IF (PRESENT(single_branch)) THEN
+      IF (single_branch) THEN
+         IF (.NOT. (lda_plus_u .AND. noncolin .AND. domag) .OR. finite_freq) &
+            CALL errore('dfpt_kernel', 'single_branch is only for noncollinear &
+            &magnetic DFPT+U at zero frequency', 1)
+         nsolv = 1
+      ENDIF
+   ENDIF
+   hub_dnsq_single_branch = lda_plus_u .AND. noncolin .AND. domag .AND. nsolv == 1
    !
    IF (twochem .AND. (noncolin .AND. domag)) CALL errore('dfpt_kernel', &
       'DFPT with twochem and noncollinear magnetism is not implemented', 1)
@@ -203,6 +240,42 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
       'DFPT with noncollinear magnetism and finite frequency is not implemented', 1)
    !
    CALL apply_dpot_allocate()
+   !
+   ! Noncollinear magnetic DFPT+U: optional threshold overrides (validation
+   ! runs only, set through the environment) and joint Hxc + Hubbard mixing.
+   !
+   CALL read_soc_u_threshold('QE_SOC_U_DFPT_FIRST_ITER_THRESH', &
+        first_iter_threshold_active, first_iter_threshold)
+   CALL read_soc_u_threshold('QE_SOC_U_DFPT_ALL_ITER_THRESH', &
+        all_iter_threshold_active, all_iter_threshold)
+   IF ((first_iter_threshold_active .OR. all_iter_threshold_active) .AND. &
+       .NOT. (lda_plus_u .AND. noncolin .AND. domag)) CALL errore('dfpt_kernel', &
+       'QE_SOC_U_DFPT_*_ITER_THRESH requires noncollinear magnetic DFPT+U', 1)
+   IF (first_iter_threshold_active .AND. ionode) &
+      WRITE(stdout, '(5x,"SOC_U_FIRST_ITER_THRESH_REQUESTED",1x,es24.16)') &
+           first_iter_threshold
+   IF (all_iter_threshold_active .AND. ionode) &
+      WRITE(stdout, '(5x,"SOC_U_ALL_ITER_THRESH_REQUESTED",1x,es24.16)') &
+           all_iter_threshold
+   !
+   joint_hubbard = lda_plus_u .AND. noncolin .AND. domag
+   IF (joint_hubbard) THEN
+      IF (okvan .OR. okpaw) CALL errore('dfpt_kernel', &
+         'joint Hubbard mixing requires norm-conserving pseudopotentials', 1)
+      ALLOCATE(dnsscf_input, MOLD=dnsscf)
+      ALLOCATE(mixing_ueff(nat), mixing_ldim(nat))
+      dnsscf_input = (0.0_DP, 0.0_DP)
+      mixing_ueff = 0.0_DP
+      mixing_ldim = 0
+      DO mixing_na = 1, nat
+         IF (.NOT. is_hubbard(ityp(mixing_na))) CYCLE
+         mixing_ueff(mixing_na) = effU(ityp(mixing_na))
+         mixing_ldim(mixing_na) = 2 * Hubbard_l(ityp(mixing_na)) + 1
+      ENDDO
+      ! Global physical complex-entry count, independent of local FFT padding
+      mixing_grid_size = REAL(dfftp%nr1,DP) * REAL(dfftp%nr2,DP) * &
+           REAL(dfftp%nr3,DP) * REAL(nspin_mag,DP) * REAL(npert,DP)
+   ENDIF
    !
    ALLOCATE(dvscftmp(dfftp%nnr, nspin_mag, npert))
    IF (noncolin) ALLOCATE(dbecsum_nc(nhm, nhm, nat, nspin, npert))
@@ -238,11 +311,28 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
    !
    IF (twochem) CALL allocate_twochem(npert, nsolv)
    !
+   mix_iter = iter0
+   IF (joint_hubbard) THEN
+      ! Restart records hold the Hxc and wavefunction responses, not the mixed
+      ! Hubbard input: rebuild an initial guess and cold-start Broyden.
+      mix_iter = 0
+      IF (iter0 > 0) THEN
+         IF (iverbosity == 1) WRITE(stdout,'(5x,a,1x,i0)') &
+              'SOC_U_DNSSCF_JOINT_REFRESH_BEGIN', iter0
+         CALL dnsq_scf(npert, lmetq0)
+         IF (iverbosity == 1) WRITE(stdout,'(5x,a,1x,i0)') &
+              'SOC_U_DNSSCF_JOINT_REFRESH_END', iter0
+         dnsscf_input = dnsscf
+      ENDIF
+      WRITE(stdout,'(5x,a,1x,i0)') 'SOC_U_JOINT_MIXING_BEGIN', iter0
+   ENDIF
+   !
    ! Loop over DFPT self-consistent iterations
    !
    do kter = 1, niter_ph
       !
       iter = kter + iter0
+      mix_iter = mix_iter + 1
       !
       first_iter = (iter == 1)
       !
@@ -261,15 +351,43 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
       !
       IF (first_iter .OR. kter == 1) THEN
          ! If first iteration or first iteration after restart
-         thresh = 1.0d-2
+         thresh_adaptive = 1.0d-2
       ELSE
-         thresh = min(1.d-1 * sqrt(dr2), thresh)
+         thresh_adaptive = min(1.d-1 * sqrt(dr2), thresh_adaptive)
       ENDIF
+      thresh = thresh_adaptive
+      !
+      ! Validation overrides act on top of the adaptive threshold and never
+      ! enter its history.
+      !
+      joint_cg_mode = 'QE_ADAPTIVE'
+      IF (first_iter .AND. first_iter_threshold_active) THEN
+         thresh = first_iter_threshold
+         joint_cg_mode = 'FIRST_ITER_VALIDATION'
+         IF (ionode) WRITE(stdout, &
+              '(5x,"SOC_U_FIRST_ITER_THRESH_APPLIED",1x,i0,1x,es24.16)') iter, thresh
+      ENDIF
+      IF (all_iter_threshold_active) THEN
+         thresh_before_cap = thresh
+         thresh = MIN(thresh, all_iter_threshold)
+         joint_cg_mode = 'CAPPED_VALIDATION'
+         IF (ionode) WRITE(stdout, &
+              '(5x,"SOC_U_ALL_ITER_THRESH_CHECK",1x,i0,2(1x,es24.16))') &
+              iter, thresh_before_cap, thresh
+      ENDIF
+      IF (joint_hubbard .AND. ionode) &
+         WRITE(stdout,'(5x,a,1x,i0,1x,a,2(1x,es24.16))') 'SOC_U_JOINT_CG_THRESHOLD', &
+              iter, TRIM(joint_cg_mode), thresh_adaptive, thresh
       !
       ! DFPT+U: at each ph iteration calculate dnsscf,
       ! i.e. the scf variation of the occupation matrix ns.
       !
-      IF (lda_plus_u .AND. (.NOT. first_iter)) CALL dnsq_scf(npert, lmetq0)
+      IF (joint_hubbard) THEN
+         ! Use the mixed Hubbard response from the previous iteration
+         dnsscf = dnsscf_input
+      ELSE IF (lda_plus_u .AND. (.NOT. first_iter)) THEN
+         CALL dnsq_scf(npert, lmetq0)
+      ENDIF
       !
       ! Start the loop on the two linear systems, one at B and one at -B
       !
@@ -301,9 +419,13 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
                      thresh, dfpt_data%dvscfs, all_conv, averlt, dfpt_data%drhos, dfpt_data%dbecsum, &
                      dbecsum_nc)
                ELSE
+                  ! The -B Hamiltonian also needs the time-reversed ground-state
+                  ! Hubbard potential (vrs and deeq_nc are reversed inside).
+                  IF (lda_plus_u .AND. noncolin) CALL time_reverse_ground_hubbard_nc()
                   CALL sternheimer_kernel(first_iter, isolv==2, npert, lrdvpsi, iudvpsi, &
                      thresh, dfpt_data%dvscfs, all_conv, averlt, dfpt_data%drhos, dfpt_data%dbecsum, &
                      dbecsum_nc_trev)
+                  IF (lda_plus_u .AND. noncolin) CALL time_reverse_ground_hubbard_nc()
                ENDIF
                !
             ELSE
@@ -392,17 +514,55 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
       !
       !   And we mix with the old potential: dvscftmp -> dvscfp
       !
-      IF (okpaw) THEN
+      IF (joint_hubbard) THEN
+         !
+         ! Noncollinear magnetic DFPT+U: mix the Hxc potential and the Hubbard
+         ! occupation response together. Both outputs come from the same pair
+         ! of Sternheimer solves; dnsscf keeps the unmixed response. The exit
+         ! requires the Hxc test and the Hubbard test selected by hubbard_conv
+         ! (none: Hxc only); both Hubbard residuals are always printed.
+         !
+         IF (iverbosity == 1) WRITE(stdout,'(5x,a,1x,i0)') &
+              'SOC_U_DNSSCF_JOINT_REFRESH_BEGIN', iter
+         CALL dnsq_scf(npert, lmetq0)
+         IF (iverbosity == 1) WRITE(stdout,'(5x,a,1x,i0)') &
+              'SOC_U_DNSSCF_JOINT_REFRESH_END', iter
+         ! The Hubbard response has its own noise floor (~1e-8 Ry in the NiO
+         ! fixture), so with a tight tr2_ph it needs a separate threshold.
+         IF (hubbard_conv_thr > 0.0_DP) THEN
+            dnsscf_convergence_threshold = hubbard_conv_thr
+         ELSE
+            dnsscf_convergence_threshold = SQRT(tr2_ph)
+         ENDIF
+         CALL mix_hubbard_response(dvscftmp, dfpt_data%dvscfp, dnsscf, dnsscf_input, &
+              mixing_ueff, mixing_ldim, alpha_mix(kter), dr2, npert * tr2_ph / npol, &
+              dnsscf_convergence_threshold, mix_iter, nmix_ph, flmixdpot, convt, &
+              dnsscf_refresh_residual, dnsscf_final_scale, dnsscf_refresh_relative, &
+              hubbard_convt, hxc_grid_size=mixing_grid_size, metric_info=mix_metric_info, &
+              require_hubbard_convergence=(TRIM(hubbard_conv) /= 'none'), &
+              hubbard_criterion=MERGE('potential', 'relative ', TRIM(hubbard_conv) == 'potential'), &
+              hub_pot_residual=hub_pot_residual)
+         WRITE(stdout,'(5x,a,1x,i0,3(1x,es24.16))') &
+              'SOC_U_JOINT_MIXING_METRIC', iter, mix_metric_info
+         WRITE(stdout,'(5x,a,1x,i0,2(1x,es24.16),1x,l1)') &
+              'SOC_U_DNSSCF_CONVERGENCE_CHECK', iter, dnsscf_refresh_relative, &
+              dnsscf_convergence_threshold, hubbard_convt
+         WRITE(stdout,'(5x,a,1x,i0,2(1x,es24.16),1x,a)') &
+              'SOC_U_HUBBARD_POTENTIAL_RESIDUAL', iter, hub_pot_residual, &
+              dnsscf_convergence_threshold, TRIM(hubbard_conv)
+         IF (iverbosity == 1) WRITE(stdout,'(5x,a,1x,i0,2(1x,es24.16))') &
+              'SOC_U_JOINT_MIXING_RESIDUAL', iter, dnsscf_refresh_residual, dnsscf_final_scale
+      ELSE IF (okpaw) THEN
          !
          !  In this case we mix also dbecsum
          !
          CALL setmixout(ndim_pot, ndim_paw, mixout, dvscftmp, dfpt_data%dbecsum, ndim, -1)
          CALL mix_potential(2 * (ndim_pot + ndim), mixout, mixin, alpha_mix(kter), dr2, &
-                            npert * tr2_ph / npol, iter, nmix_ph, flmixdpot, convt)
+                            npert * tr2_ph / npol, mix_iter, nmix_ph, flmixdpot, convt)
          CALL setmixout(ndim_pot, ndim_paw, mixin, dfpt_data%dvscfp, dfpt_data%dbecsum, ndim, 1)
       ELSE
          CALL mix_potential(2 * ndim_pot, dvscftmp, dfpt_data%dvscfp, alpha_mix(kter), dr2, &
-                            npert * tr2_ph / npol, iter, nmix_ph, flmixdpot, convt)
+                            npert * tr2_ph / npol, mix_iter, nmix_ph, flmixdpot, convt)
       ENDIF
       !
       !   fft_interpolate or copy potential from hard to smooth grid: dvscfp -> dvscfs
@@ -519,6 +679,8 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
    ENDIF
    DEALLOCATE(mixin)
    DEALLOCATE(mixout)
+   IF (ALLOCATED(dnsscf_input)) DEALLOCATE(dnsscf_input, mixing_ueff, mixing_ldim)
+   hub_dnsq_single_branch = .FALSE.
    !
    IF (lmetq0) THEN
       CALL deallocate_dfpt_ldos(ldos_data)
@@ -563,6 +725,109 @@ SUBROUTINE check_all_convt( convt )
    !
 !------------------------------------------------------------------------------
 END SUBROUTINE check_all_convt
+!------------------------------------------------------------------------------
+!
+!------------------------------------------------------------------------------
+SUBROUTINE read_soc_u_threshold( env_name, active, threshold )
+   !---------------------------------------------------------------------------
+   !! Read an optional Sternheimer threshold override for noncollinear
+   !! magnetic DFPT+U validation runs. Unset: inactive. A value outside
+   !! (0, 1e-2] is an error.
+   !---------------------------------------------------------------------------
+   !
+   USE kinds,     ONLY : DP
+   USE io_global, ONLY : ionode, ionode_id
+   USE mp,        ONLY : mp_bcast
+   USE mp_images, ONLY : intra_image_comm
+   !
+   IMPLICIT NONE
+   !
+   CHARACTER(LEN=*), INTENT(IN) :: env_name
+   LOGICAL, INTENT(OUT) :: active
+   REAL(DP), INTENT(OUT) :: threshold
+   !
+   CHARACTER(LEN=64) :: env_value
+   INTEGER :: env_length, env_status, read_status, env_error
+   !
+   threshold = 1.0d-2
+   active = .FALSE.
+   env_error = 0
+   IF (ionode) THEN
+      env_value = ''
+      env_length = 0
+      CALL get_environment_variable(env_name, env_value, env_length, env_status)
+      SELECT CASE (env_status)
+      CASE (0)
+         read_status = 1
+         IF (env_length > 0) READ(env_value, *, IOSTAT=read_status) threshold
+         IF (read_status == 0) active = threshold > 0.0_DP .AND. threshold <= 1.0d-2
+         IF (.NOT. active) env_error = 1
+      CASE (1)
+         ! Unset: keep the normal thresholds
+      CASE DEFAULT
+         env_error = 1
+      END SELECT
+   ENDIF
+   CALL mp_bcast(env_error, ionode_id, intra_image_comm)
+   CALL mp_bcast(active, ionode_id, intra_image_comm)
+   CALL mp_bcast(threshold, ionode_id, intra_image_comm)
+   IF (env_error /= 0) CALL errore('read_soc_u_threshold', &
+        TRIM(env_name)//' must satisfy 0 < value <= 1d-2', 1)
+   !
+!------------------------------------------------------------------------------
+END SUBROUTINE read_soc_u_threshold
+!------------------------------------------------------------------------------
+!
+!------------------------------------------------------------------------------
+SUBROUTINE time_reverse_ground_hubbard_nc()
+   !---------------------------------------------------------------------------
+   !! Apply time reversal to the PW Hubbard operator v%ns_nc when the -B
+   !! Sternheimer system is solved. Applying it twice restores the original.
+   !---------------------------------------------------------------------------
+   !
+   USE kinds,             ONLY : DP
+   USE ions_base,         ONLY : nat, ityp
+   USE ldaU,              ONLY : Hubbard_lmax, Hubbard_l, is_hubbard
+   USE ldaU_lr,           ONLY : pack_hubbard_blocks_nc, time_reverse_hubbard_matrix_nc
+   USE noncollin_module,  ONLY : npol
+   USE scf,               ONLY : v
+   !
+   IMPLICIT NONE
+   !
+   INTEGER :: na, nt, ldim_atom, max_matrix_size
+   INTEGER :: is_bra, is_ket, iblock
+   INTEGER :: row_first, row_last, col_first, col_last
+   COMPLEX(DP), ALLOCATABLE :: matrix(:,:), matrix_tr(:,:)
+   !
+   max_matrix_size = (2 * Hubbard_lmax + 1) * npol
+   ALLOCATE(matrix(max_matrix_size,max_matrix_size))
+   ALLOCATE(matrix_tr(max_matrix_size,max_matrix_size))
+   !
+   DO na = 1, nat
+      nt = ityp(na)
+      IF (is_hubbard(nt)) THEN
+         ldim_atom = 2 * Hubbard_l(nt) + 1
+         CALL pack_hubbard_blocks_nc(ldim_atom, npol, v%ns_nc(:,:,:,na), matrix)
+         CALL time_reverse_hubbard_matrix_nc(ldim_atom, npol, matrix, matrix_tr)
+         DO is_bra = 1, npol
+            row_first = 1 + ldim_atom * (is_bra - 1)
+            row_last = ldim_atom * is_bra
+            DO is_ket = 1, npol
+               col_first = 1 + ldim_atom * (is_ket - 1)
+               col_last = ldim_atom * is_ket
+               iblock = npol * (is_bra - 1) + is_ket
+               v%ns_nc(1:ldim_atom,1:ldim_atom,iblock,na) = &
+                    matrix_tr(row_first:row_last,col_first:col_last)
+            ENDDO
+         ENDDO
+      ENDIF
+   ENDDO
+   !
+   DEALLOCATE(matrix)
+   DEALLOCATE(matrix_tr)
+   !
+!------------------------------------------------------------------------------
+END SUBROUTINE time_reverse_ground_hubbard_nc
 !------------------------------------------------------------------------------
 !
 END MODULE dfpt_kernels

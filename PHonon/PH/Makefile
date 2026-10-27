@@ -200,6 +200,16 @@ ph.x : phonon.o libph.a $(PWOBJS) $(LRMODS) $(QEMODS)
 		 $(LRMODS) $(PWOBJS) $(QEMODS) $(QELIBS)
 	- ( cd ../../bin ; ln -fs ../PHonon/PH/ph.x . )
 
+# ph.x with the collinear NCPP d2ns_bare restricted to the nonzero onsite
+# terms (no beta-function derivatives, projections once per k point).
+# Same physics as ph.x; USPP/PAW and noncollinear paths are unchanged.
+ph_acc.x : dynmat_hub_bare.f90 phonon.o libph.a $(PWOBJS) $(LRMODS) $(QEMODS)
+	$(MPIF90) $(F90FLAGS) -D__PH_ACC \
+		-c dynmat_hub_bare.f90 -o dynmat_hub_bare_acc.o
+	$(LD) $(LDFLAGS) -o $@ phonon.o dynmat_hub_bare_acc.o libph.a \
+		 $(LRMODS) $(PWOBJS) $(QEMODS) $(QELIBS)
+	- ( cd ../../bin ; ln -fs ../PHonon/PH/$@ . )
+
 dynmat.x : dynmat.o libph.a $(PWOBJS) $(LRMODS) $(QEMODS)
 	$(LD) $(LDFLAGS) -o $@ dynmat.o libph.a \
 		 $(LRMODS) $(PWOBJS) $(QEMODS) $(QELIBS)

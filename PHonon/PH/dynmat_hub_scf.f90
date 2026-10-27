@@ -62,6 +62,7 @@ SUBROUTINE dynmat_hub_scf (irr, nu_i0, nper)
   USE mp_pools,      ONLY : inter_pool_comm       
   USE mp,            ONLY : mp_sum
   USE buffers,       ONLY : get_buffer
+  USE noncollin_module, ONLY : noncolin
   !
   IMPLICIT NONE
   !
@@ -85,6 +86,11 @@ SUBROUTINE dynmat_hub_scf (irr, nu_i0, nper)
   COMPLEX(DP) :: dvi, prj, prj_orth
   LOGICAL :: lmetq0   ! .true. if q=0 for a metal
   ! 
+  IF (noncolin) THEN
+     CALL dynmat_hub_scf_nc(irr, nu_i0, nper)
+     RETURN
+  ENDIF
+  !
   CALL start_clock( 'dynmat_hub_scf' )
   !
   ALLOCATE (dyn1(nper,nmodes))
@@ -437,3 +443,339 @@ SUBROUTINE dynmat_hub_scf (irr, nu_i0, nper)
   RETURN
   !
 END SUBROUTINE dynmat_hub_scf
+
+!-----------------------------------------------------------------------
+SUBROUTINE dynmat_hub_scf_nc (irr, nu_i0, nper)
+  !---------------------------------------------------------------------
+  !! Norm-conserving, fixed-Dudarev noncollinear Hubbard contribution
+  !! to the self-consistent dynamical matrix:
+  !!
+  !!   term 1 = V_U : delta_i delta_j N_cross
+  !!   term 2 = delta_i V_U_bare : delta_j N_scf .
+  !!
+  !! The cross occupation response is reconstructed from both magnetic
+  !! Sternheimer records.  All contractions retain the complete
+  !! orbital-spin matrix.
+  !
+  USE kinds,             ONLY : DP
+  USE ions_base,         ONLY : nat, ityp, ntyp => nsp
+  USE ldaU,              ONLY : Hubbard_lmax, Hubbard_l, offsetU, &
+                                is_hubbard, Hubbard_J0, Hubbard_alpha, &
+                                Hubbard_beta, Hubbard_projectors, &
+                                lda_plus_u_kind, nwfcU
+  USE ldaU_lr,           ONLY : dnsscf, effU, swfcatomk, swfcatomkpq, &
+                                pack_hubbard_blocks_nc, build_dvhub_nc, &
+                                accumulate_ns_nc_transition, &
+                                ns_nc_hermiticity_residual
+  USE ldaU_ph,           ONLY : dnsbare, wfcatomk, wfcatomkpq
+  USE noncollin_module,  ONLY : domag, npol
+  USE control_lr,        ONLY : lgamma, nbnd_occ, rec_code_read
+  USE uspp,              ONLY : okvan
+  USE qpoint,            ONLY : nksq, ikks, ikqs, ikmks
+  USE wvfct,             ONLY : npwx, nbnd
+  USE klist,             ONLY : wk, ngk, igk_k, lgauss, ltetra
+  USE wavefunctions,     ONLY : evc
+  USE eqv,               ONLY : dpsi
+  USE units_lr,          ONLY : iuwfc, lrwfc, iudwf, lrdwf, &
+                                iuatwfc, iuatswfc
+  USE io_files,          ONLY : nwordwfcU
+  USE buffers,           ONLY : get_buffer
+  USE mp_bands,          ONLY : intra_bgrp_comm
+  USE mp_pools,          ONLY : inter_pool_comm
+  USE mp,                ONLY : mp_sum
+  USE scf,               ONLY : v
+  USE modes,             ONLY : u, nmodes
+  USE dynmat,            ONLY : dyn, dyn_rec, dyn_hub_scf
+  USE control_flags,     ONLY : iverbosity
+  USE io_global,         ONLY : stdout
+  !
+  IMPLICIT NONE
+  !
+  INTEGER, INTENT(IN) :: irr
+  INTEGER, INTENT(IN) :: nu_i0
+  INTEGER, INTENT(IN) :: nper
+  !
+  INTEGER :: ik, ikk, ikq, ikmk, npw, npwq, isolv, ipert, nrec
+  INTEGER :: na, nah, nt, icart, is_row, is_col, m, iwfc
+  INTEGER :: row_first, na_icart, ldim_atom, max_ldim
+  INTEGER :: matrix_size, max_matrix_size, imode, jmode
+  REAL(DP) :: cross_herm_res
+  REAL(DP), ALLOCATABLE :: band_weight(:)
+  COMPLEX(DP) :: work
+  COMPLEX(DP), EXTERNAL :: ZDOTU, ZDOTC
+  COMPLEX(DP), ALLOCATABLE :: dprojector_k(:,:,:)
+  COMPLEX(DP), ALLOCATABLE :: dprojector_kpq(:,:,:)
+  COMPLEX(DP), ALLOCATABLE :: proj0(:,:), proj_d1(:,:,:)
+  COMPLEX(DP), ALLOCATABLE :: proj_resp(:,:), proj_d1_resp(:,:,:)
+  COMPLEX(DP), ALLOCATABLE :: cross_ns(:,:,:,:,:,:)
+  COMPLEX(DP), ALLOCATABLE :: ground_matrix(:,:), cross_matrix(:,:)
+  COMPLEX(DP), ALLOCATABLE :: scf_matrix(:,:), dv_bare_matrix(:,:)
+  COMPLEX(DP), ALLOCATABLE :: cart_terms(:,:), dyn1(:,:)
+  COMPLEX(DP), ALLOCATABLE :: dyn1_test(:,:)
+  LOGICAL :: lmetq0
+  !
+  CALL start_clock('dynmat_hub_scf')
+  !
+  IF (.NOT.domag) CALL errore('dynmat_hub_scf_nc', &
+                         'noncollinear Hubbard response requires two magnetic solutions', 1)
+  IF (okvan) CALL errore('dynmat_hub_scf_nc', &
+                         'noncollinear Hubbard response requires NCPP', 1)
+  IF (Hubbard_projectors /= 'atomic') CALL errore('dynmat_hub_scf_nc', &
+       'noncollinear Hubbard response requires atomic projectors', 1)
+  IF (lda_plus_u_kind /= 0) CALL errore('dynmat_hub_scf_nc', &
+                                        'only Dudarev DFT+U is supported', 1)
+  IF (npol /= 2) CALL errore('dynmat_hub_scf_nc', &
+                             'noncollinear Hubbard response requires npol=2', 1)
+  IF (.NOT.ALLOCATED(v%ns_nc)) CALL errore('dynmat_hub_scf_nc', &
+                                           'PW Hubbard potential is unavailable', 1)
+  DO nt = 1, ntyp
+     IF (is_hubbard(nt) .AND. Hubbard_J0(nt) /= 0.0_DP) &
+        CALL errore('dynmat_hub_scf_nc', 'Hubbard J0 is outside the MVP', 1)
+     IF (is_hubbard(nt) .AND. Hubbard_alpha(nt) /= 0.0_DP) &
+        CALL errore('dynmat_hub_scf_nc', 'Hubbard alpha is outside the MVP', 1)
+     IF (is_hubbard(nt) .AND. Hubbard_beta(nt) /= 0.0_DP) &
+        CALL errore('dynmat_hub_scf_nc', 'Hubbard beta is outside the MVP', 1)
+  ENDDO
+  !
+  lmetq0 = (lgauss .OR. ltetra) .AND. lgamma
+  IF (rec_code_read == 10) &
+     CALL dnsq_scf(nper, lmetq0)
+  !
+  max_ldim = 2 * Hubbard_lmax + 1
+  max_matrix_size = max_ldim * npol
+  ALLOCATE(dprojector_k(npwx*npol,nwfcU,3))
+  ALLOCATE(dprojector_kpq(npwx*npol,nwfcU,3))
+  ALLOCATE(proj0(nwfcU,nbnd))
+  ALLOCATE(proj_d1(nwfcU,nbnd,3))
+  ALLOCATE(proj_resp(nwfcU,nbnd))
+  ALLOCATE(proj_d1_resp(nwfcU,nbnd,3))
+  ALLOCATE(band_weight(nbnd))
+  ALLOCATE(cross_ns(max_ldim,max_ldim,npol*npol,nat,3,nper))
+  ALLOCATE(ground_matrix(max_matrix_size,max_matrix_size))
+  ALLOCATE(cross_matrix(max_matrix_size,max_matrix_size))
+  ALLOCATE(scf_matrix(max_matrix_size,max_matrix_size))
+  ALLOCATE(dv_bare_matrix(max_matrix_size,max_matrix_size))
+  ALLOCATE(cart_terms(nper,3*nat))
+  ALLOCATE(dyn1(nper,nmodes))
+  ALLOCATE(dyn1_test(nmodes,nmodes))
+  !
+  cross_ns = (0.0_DP, 0.0_DP)
+  !
+  DO ik = 1, nksq
+     ikk = ikks(ik)
+     ikq = ikqs(ik)
+     npw = ngk(ikk)
+     npwq = ngk(ikq)
+     CALL get_buffer(wfcatomk, nwordwfcU, iuatwfc, ikk)
+     CALL get_buffer(swfcatomk, nwordwfcU, iuatswfc, ikk)
+     IF (.NOT.lgamma) THEN
+        CALL get_buffer(wfcatomkpq, nwordwfcU, iuatwfc, ikq)
+        CALL get_buffer(swfcatomkpq, nwordwfcU, iuatswfc, ikq)
+     ENDIF
+     !
+     dprojector_k = (0.0_DP, 0.0_DP)
+     dprojector_kpq = (0.0_DP, 0.0_DP)
+     DO nah = 1, nat
+        nt = ityp(nah)
+        IF (is_hubbard(nt)) THEN
+           ldim_atom = 2 * Hubbard_l(nt) + 1
+           DO is_col = 1, npol
+              DO m = 1, ldim_atom
+                 iwfc = offsetU(nah) + m + ldim_atom * (is_col - 1)
+                 DO icart = 1, 3
+                    DO is_row = 1, npol
+                       row_first = 1 + npwx * (is_row - 1)
+                       CALL dwfc(npw, igk_k(1,ikk), ikk, icart, &
+                                 wfcatomk(row_first,iwfc), &
+                                 dprojector_k(row_first,iwfc,icart))
+                       IF (.NOT.lgamma) &
+                          CALL dwfc(npwq, igk_k(1,ikq), ikq, icart, &
+                                    wfcatomkpq(row_first,iwfc), &
+                                    dprojector_kpq(row_first,iwfc,icart))
+                    ENDDO
+                 ENDDO
+              ENDDO
+           ENDDO
+        ENDIF
+     ENDDO
+     IF (lgamma) dprojector_kpq = dprojector_k
+     !
+     band_weight = 0.0_DP
+     band_weight(1:nbnd_occ(ikk)) = wk(ikk)
+     !
+     DO isolv = 1, 2
+        IF (isolv == 1) THEN
+           ikmk = ikk
+        ELSE
+           ikmk = ikmks(ik)
+        ENDIF
+        CALL get_buffer(evc, lrwfc, iuwfc, ikmk)
+        !
+        CALL ZGEMM('C', 'N', nwfcU, nbnd, npwx*npol, &
+                   (1.0_DP,0.0_DP), swfcatomk, npwx*npol, evc, &
+                   npwx*npol, (0.0_DP,0.0_DP), proj0, nwfcU)
+        DO icart = 1, 3
+           CALL ZGEMM('C', 'N', nwfcU, nbnd, npwx*npol, &
+                      (1.0_DP,0.0_DP), dprojector_k(:,:,icart), npwx*npol, &
+                      evc, npwx*npol, (0.0_DP,0.0_DP), &
+                      proj_d1(:,:,icart), nwfcU)
+        ENDDO
+        CALL mp_sum(proj0, intra_bgrp_comm)
+        CALL mp_sum(proj_d1, intra_bgrp_comm)
+        !
+        DO ipert = 1, nper
+           nrec = (isolv - 1) * nper * nksq + &
+                  (ipert - 1) * nksq + ik
+           CALL get_buffer(dpsi, lrdwf, iudwf, nrec)
+           CALL ZGEMM('C', 'N', nwfcU, nbnd, npwx*npol, &
+                      (1.0_DP,0.0_DP), swfcatomkpq, npwx*npol, dpsi, &
+                      npwx*npol, (0.0_DP,0.0_DP), proj_resp, nwfcU)
+           DO icart = 1, 3
+              CALL ZGEMM('C', 'N', nwfcU, nbnd, npwx*npol, &
+                         (1.0_DP,0.0_DP), dprojector_kpq(:,:,icart), &
+                         npwx*npol, dpsi, npwx*npol, &
+                         (0.0_DP,0.0_DP), proj_d1_resp(:,:,icart), nwfcU)
+           ENDDO
+           CALL mp_sum(proj_resp, intra_bgrp_comm)
+           CALL mp_sum(proj_d1_resp, intra_bgrp_comm)
+           !
+           DO nah = 1, nat
+              nt = ityp(nah)
+              IF (is_hubbard(nt)) THEN
+                 ldim_atom = 2 * Hubbard_l(nt) + 1
+                 DO icart = 1, 3
+                    CALL accumulate_ns_nc_transition(ldim_atom, &
+                         offsetU(nah), npol, nbnd_occ(ikk), band_weight, &
+                         proj_d1(:,:,icart), proj_resp, &
+                         cross_ns(:,:,:,nah,icart,ipert), isolv == 2)
+                    CALL accumulate_ns_nc_transition(ldim_atom, &
+                         offsetU(nah), npol, nbnd_occ(ikk), band_weight, &
+                         proj0, proj_d1_resp(:,:,icart), &
+                         cross_ns(:,:,:,nah,icart,ipert), isolv == 2)
+                 ENDDO
+              ENDIF
+           ENDDO
+        ENDDO
+     ENDDO
+  ENDDO
+  !
+  CALL mp_sum(cross_ns, inter_pool_comm)
+  !
+  cross_herm_res = 0.0_DP
+  DO ipert = 1, nper
+     DO nah = 1, nat
+        nt = ityp(nah)
+        IF (is_hubbard(nt)) THEN
+           ldim_atom = 2 * Hubbard_l(nt) + 1
+           DO icart = 1, 3
+              cross_herm_res = MAX(cross_herm_res, &
+                   ns_nc_hermiticity_residual(ldim_atom, &
+                   cross_ns(:,:,:,nah,icart,ipert)))
+           ENDDO
+        ENDIF
+     ENDDO
+  ENDDO
+  !
+  cart_terms = (0.0_DP, 0.0_DP)
+  DO ipert = 1, nper
+     DO nah = 1, nat
+        nt = ityp(nah)
+        IF (is_hubbard(nt)) THEN
+           ldim_atom = 2 * Hubbard_l(nt) + 1
+           matrix_size = ldim_atom * npol
+           CALL pack_hubbard_blocks_nc(ldim_atom, npol, &
+                                        v%ns_nc(:,:,:,nah), ground_matrix)
+           CALL pack_hubbard_blocks_nc(ldim_atom, npol, &
+                                        dnsscf(:,:,:,nah,ipert), scf_matrix)
+           !
+           DO icart = 1, 3
+              na_icart = 3 * (nah - 1) + icart
+              CALL pack_hubbard_blocks_nc(ldim_atom, npol, &
+                   cross_ns(:,:,:,nah,icart,ipert), cross_matrix)
+              ! cross_matrix is linear in the response ket.  Conjugate the
+              ! complete contraction to recover <dpsi|dV_U|psi>.
+              work = CONJG(ZDOTU(matrix_size*matrix_size, ground_matrix, 1, &
+                                 cross_matrix, 1))
+              cart_terms(ipert,na_icart) = &
+                   cart_terms(ipert,na_icart) + work
+           ENDDO
+           !
+           DO na = 1, nat
+              DO icart = 1, 3
+                 na_icart = 3 * (na - 1) + icart
+                 CALL build_dvhub_nc(ldim_atom, npol, effU(nt), &
+                      dnsbare(:,:,:,nah,icart,na), dv_bare_matrix)
+                 IF (lgamma) THEN
+                    work = ZDOTU(matrix_size*matrix_size, &
+                                 dv_bare_matrix, 1, scf_matrix, 1)
+                 ELSE
+                    ! Reproduce the collinear general-q order
+                    ! CONJG(dN_scf(q))*dN_bare(q) in the full
+                    ! orbital-spin representation.
+                    work = ZDOTC(matrix_size*matrix_size, scf_matrix, 1, &
+                                 dv_bare_matrix, 1)
+                 ENDIF
+                 cart_terms(ipert,na_icart) = &
+                      cart_terms(ipert,na_icart) + work
+              ENDDO
+           ENDDO
+        ENDIF
+     ENDDO
+  ENDDO
+  !
+  CALL ZGEMM('N', 'N', nper, nmodes, 3*nat, &
+             (1.0_DP,0.0_DP), cart_terms, nper, u, 3*nat, &
+             (0.0_DP,0.0_DP), dyn1, nper)
+  !
+  dyn1_test = (0.0_DP, 0.0_DP)
+  DO imode = 1, nmodes
+     DO ipert = 1, nper
+        jmode = nu_i0 + ipert
+        dyn_hub_scf(jmode,imode) = dyn1(ipert,imode)
+        dyn_rec(jmode,imode) = dyn_rec(jmode,imode) + dyn1(ipert,imode)
+        dyn(jmode,imode) = dyn(jmode,imode) + dyn1(ipert,imode)
+        dyn1_test(jmode,imode) = dyn1(ipert,imode)
+     ENDDO
+  ENDDO
+  !
+  IF (iverbosity == 1) THEN
+     IF (lgamma) THEN
+        WRITE(stdout,'(5x,"cross dnsscf nc Hermiticity residual =",1x,es12.5)') &
+             cross_herm_res
+     ELSE
+        DO imode = 1, nmodes
+           DO ipert = 1, nper
+              jmode = nu_i0 + ipert
+              WRITE(stdout, &
+                   '(5x,"SOC_U_Q_DYNMAT_SCF_CHECK",2(1x,i0),2(1x,es24.16))') &
+                   jmode, imode, REAL(dyn1(ipert,imode),DP), &
+                   AIMAG(dyn1(ipert,imode))
+           ENDDO
+        ENDDO
+     ENDIF
+     CALL tra_write_matrix_no_sym('dyn1 NC NOT SYMMETRIZED',dyn1_test,nat)
+     CALL tra_write_matrix('dyn1 NC SYMMETRIZED',dyn1_test,u,nat)
+     CALL tra_write_matrix('dyn',dyn,u,nat)
+  ENDIF
+  !
+  DEALLOCATE(dprojector_k)
+  DEALLOCATE(dprojector_kpq)
+  DEALLOCATE(proj0)
+  DEALLOCATE(proj_d1)
+  DEALLOCATE(proj_resp)
+  DEALLOCATE(proj_d1_resp)
+  DEALLOCATE(band_weight)
+  DEALLOCATE(cross_ns)
+  DEALLOCATE(ground_matrix)
+  DEALLOCATE(cross_matrix)
+  DEALLOCATE(scf_matrix)
+  DEALLOCATE(dv_bare_matrix)
+  DEALLOCATE(cart_terms)
+  DEALLOCATE(dyn1)
+  DEALLOCATE(dyn1_test)
+  !
+  CALL stop_clock('dynmat_hub_scf')
+  !
+  RETURN
+  !
+END SUBROUTINE dynmat_hub_scf_nc

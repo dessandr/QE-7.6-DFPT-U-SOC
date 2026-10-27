@@ -41,6 +41,7 @@ subroutine solve_e
   USE noncollin_module,      ONLY : nspin_mag
   USE paw_variables,         ONLY : okpaw
   USE ldaU,                  ONLY : lda_plus_u
+  USE ldaU_lr,               ONLY : lhubbard_soc
   USE units_ph,              ONLY : lrdrho, iudrho, lrebar, iuebar
   USE units_lr,              ONLY : iuwfc, lrwfc
   USE output,                ONLY : fildrho
@@ -130,8 +131,11 @@ subroutine solve_e
   !
   !   Solve DFPT fixed-point equation
   !
+  ! Noncollinear magnetic DFPT+U (lhubbard_soc): one Sternheimer branch, as
+  ! dvpsi_e provides only the +B records.
   CALL dfpt_kernel('PHONON', 3, iter0, lrebar, iuebar, dr2, dfpt_data, 1, 0, &
-                   write_rec_callback = write_rec, stop_callback = stop_smoothly_ph)
+                   write_rec_callback = write_rec, stop_callback = stop_smoothly_ph, &
+                   single_branch = lhubbard_soc)
   !
   IF (lda_plus_u) CALL dnsq_store(3, 0)
   !

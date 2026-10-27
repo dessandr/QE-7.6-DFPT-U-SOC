@@ -163,10 +163,10 @@ subroutine allocate_phq
      !
      ldim = 2 * Hubbard_lmax + 1
      !
-     ALLOCATE (wfcatomk(npwx,nwfcU))
-     ALLOCATE (swfcatomk(npwx,nwfcU))
-     ALLOCATE (dwfcatomk(npwx,nwfcU,3))
-     ALLOCATE (sdwfcatomk(npwx,nwfcU))
+     ALLOCATE (wfcatomk(npwx*npol,nwfcU))
+     ALLOCATE (swfcatomk(npwx*npol,nwfcU))
+     ALLOCATE (dwfcatomk(npwx*npol,nwfcU,3))
+     ALLOCATE (sdwfcatomk(npwx*npol,nwfcU))
      ALLOCATE (dvkb(npwx,nkb,3))
      !
      ALLOCATE (dnsbare(ldim,ldim,nspin,nat,3,nat))
@@ -181,10 +181,10 @@ subroutine allocate_phq
         vkbkpq       => vkb
         dvkbkpq      => dvkb
      ELSE
-        ALLOCATE (wfcatomkpq(npwx,nwfcU))
-        ALLOCATE (swfcatomkpq(npwx,nwfcU))
-        ALLOCATE (dwfcatomkpq(npwx,nwfcU,3))
-        ALLOCATE (sdwfcatomkpq(npwx,nwfcU))
+        ALLOCATE (wfcatomkpq(npwx*npol,nwfcU))
+        ALLOCATE (swfcatomkpq(npwx*npol,nwfcU))
+        ALLOCATE (dwfcatomkpq(npwx*npol,nwfcU,3))
+        ALLOCATE (sdwfcatomkpq(npwx*npol,nwfcU))
         ALLOCATE (vkbkpq(npwx,nkb))
         ALLOCATE (dvkbkpq(npwx,nkb,3))
      ENDIF

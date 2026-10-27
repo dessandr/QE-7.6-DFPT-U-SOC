@@ -116,7 +116,9 @@ SUBROUTINE close_phq( flag )
      CALL close_buffer(iuatwfc, 'delete')
      CALL close_buffer(iuatswfc, 'delete')
      CLOSE( UNIT = iundnsscf, STATUS = 'KEEP' )
-     IF (lgamma) THEN
+     ! The in-memory Hubbard record length depends on q through npwx.
+     ! Discard the q-local buffer before the next q recomputes its size.
+     IF (lgamma .OR. io_level <= 0) THEN
         CALL close_buffer(iunhub, 'delete')
         CALL close_buffer(iunhub_noS, 'delete')
      ENDIF

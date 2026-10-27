@@ -578,6 +578,58 @@ input_description -distribution {Quantum ESPRESSO} -package PHonon -program ph.x
             }
         }
 
+        var lhubbard_soc -type LOGICAL {
+            default { .false. }
+            info {
+                If .true. enable DFPT+U for a noncollinear (with or without
+                spin-orbit) ground state: fixed U_eff (dU/du = 0), Dudarev
+                (lda_plus_u_kind = 0) onsite U, atomic projectors,
+                norm-conserving pseudopotentials, magnetic insulators,
+                one Hubbard manifold per atom. Without it, ph.x stops for a
+                noncollinear DFPT+U ground state.
+            }
+        }
+
+        var hubbard_conv -type CHARACTER {
+            default { 'potential' }
+            options {
+                info {
+                    Used only with @ref lhubbard_soc: convergence test of the
+                    Hubbard occupation response dN, which is mixed together
+                    with the Hxc potential and must converge together with it
+                    (@ref tr2_ph):
+                }
+                opt -val 'potential' {
+                    max_I U_I |dN_out - dN_in| below sqrt(@ref tr2_ph) (Ry):
+                    the induced Hubbard potential residual, in the same units
+                    as the Hxc test. Also defined when dN vanishes by symmetry.
+                }
+                opt -val 'relative' {
+                    max |dN_out - dN_in| / max |dN| below sqrt(@ref tr2_ph)
+                    (the QE 7.3 implementation). May not be reachable when dN
+                    is small or zero by symmetry.
+                }
+                opt -val 'none' {
+                    Hxc test only. Diagnostic: dN may then be far from
+                    converged when the loop stops.
+                }
+            }
+        }
+
+        var hubbard_conv_thr -type REAL {
+            default { sqrt(@ref tr2_ph) }
+            info {
+                Used only with @ref lhubbard_soc and @ref hubbard_conv
+                'potential' or 'relative': threshold of the Hubbard test
+                (Ry for 'potential'), instead of sqrt(@ref tr2_ph). The
+                Hubbard response has a numerical floor of its own (about
+                1e-8 Ry in a NiO test), so a tight @ref tr2_ph (e.g. 1d-18)
+                needs a separate value such as 1d-8. A value <= 0 selects
+                the default.
+            }
+        }
+        }
+
         var ldvscf_interpolate -type  LOGICAL {
             default { .false. }
             info {

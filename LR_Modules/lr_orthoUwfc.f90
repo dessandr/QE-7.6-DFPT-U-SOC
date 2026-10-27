@@ -135,7 +135,7 @@ SUBROUTINE lr_orthoUwfc (lflag)
         CALL copy_U_wfc (wfcatom, noncolin)
         !$acc update host(wfcU)
         CALL save_buffer (wfcU, nwordwfcU, iuatwfc, ikk)
-        IF (lgamma) CALL save_buffer (wfcU, nwordwfcU, iunhub_noS, ik)
+        IF (lgamma) CALL save_buffer (wfcU, nwordwfcU, iunhub_noS, ikk)
      ENDIF
      !
      ! Copy the result from (orthonormalized) swfcatom 
@@ -145,7 +145,7 @@ SUBROUTINE lr_orthoUwfc (lflag)
      CALL copy_U_wfc (swfcatom, noncolin)
      !$acc update host(wfcU)
      CALL save_buffer (wfcU, nwordwfcU, iuatswfc, ikk)
-     IF (lgamma) CALL save_buffer (wfcU, nwordwfcU, iunhub, ik)
+     IF (lgamma) CALL save_buffer (wfcU, nwordwfcU, iunhub, ikk)
      !
      IF (.NOT.lgamma) THEN
         !

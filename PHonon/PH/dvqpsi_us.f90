@@ -27,8 +27,9 @@ subroutine dvqpsi_us (ik, uact, addnlcc, becp1, alphap)
   USE fft_base,         ONLY : dffts
   USE fft_interfaces,   ONLY : fwfft, invfft
   USE lsda_mod,         ONLY : lsda, isk, current_spin
-  USE noncollin_module, ONLY : npol
+  USE noncollin_module, ONLY : npol, noncolin
   USE ldaU,             ONLY : lda_plus_u
+  USE ldaU_lr,          ONLY : hub_bare_time_reversed, hub_bare_oracle
   USE wvfct,            ONLY : nbnd, npwx
   USE wavefunctions,    ONLY : evc
   USE eqv,              ONLY : dvpsi
@@ -188,7 +189,13 @@ subroutine dvqpsi_us (ik, uact, addnlcc, becp1, alphap)
   !
   ! DFPT+U: add the bare variation of the Hubbard potential
   !
-  IF (lda_plus_u) CALL dvqhub_barepsi_us(ik, uact)
+  IF (lda_plus_u) THEN
+     IF (noncolin) THEN
+        CALL dvqhub_barepsi_nc(ik, uact, hub_bare_time_reversed, hub_bare_oracle)
+     ELSE
+        CALL dvqhub_barepsi_us(ik, uact)
+     ENDIF
+  ENDIF
   !
   call stop_clock ('dvqpsi_us')
   !

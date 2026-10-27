@@ -97,7 +97,7 @@ subroutine phq_setup
   USE lr_nc_mag,     ONLY : deeq_nc_save
   USE control_lr,    ONLY : lgamma, lgamma_gamma, niter_ph, alpha_mix, flmixdpot, &
                             reduce_io, rec_code, rec_code_read, where_rec
-  USE ldaU,          ONLY : lda_plus_u, Hubbard_U, Hubbard_J0
+  USE ldaU,          ONLY : lda_plus_u, Hubbard_U, Hubbard_J0, d_spin_ldau
   USE ldaU_lr,       ONLY : effU
   USE constants,     ONLY : rytoev
   USE dvscf_interpolate, ONLY : ldvscf_interpolate, dvscf_interpol_setup
@@ -443,6 +443,15 @@ subroutine phq_setup
      ! Initialize d1, d2, d3 to rotate the spherical harmonics
      !
      CALL d_matrix (d1, d2, d3)
+     !
+     ! set_small_group_of_q may reorder the symmetry operations for the
+     ! current q.  Rebuild the PW spin rotations in that same ordering.
+     !
+     IF (noncolin) THEN
+        IF (.NOT.ALLOCATED(d_spin_ldau)) &
+             CALL errore('phq_setup', 'spin rotation matrices are not allocated', 1)
+        CALL comp_dspinldau()
+     ENDIF
      !
   ENDIF
   !

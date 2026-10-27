@@ -70,7 +70,8 @@ SUBROUTINE phq_readin()
   USE elph_tetra_mod,ONLY : elph_tetra, lshift_q, in_alpha2f
   USE ktetra,        ONLY : tetra_type
   USE ldaU,          ONLY : lda_plus_u, Hubbard_projectors, lda_plus_u_kind, &
-                            is_hubbard_back
+                            is_hubbard_back, orbital_resolved
+  USE ldaU_lr,       ONLY : lhubbard_soc, hubbard_conv, hubbard_conv_thr
   USE ldaU_ph,       ONLY : read_dns_bare, d2ns_type
   USE dvscf_interpolate, ONLY : ldvscf_interpolate, do_long_range, &
       do_charge_neutral, wpot_dir
@@ -127,7 +128,8 @@ SUBROUTINE phq_readin()
                        lshift_q, read_dns_bare, d2ns_type, diagonalization, &
                        ldvscf_interpolate, do_long_range, do_charge_neutral, &
                        wpot_dir, ahc_dir, ahc_nbnd, ahc_nbndskip, &
-                       skip_upper, dftd3_hess, kx, ky, kz, lmultipole
+                       skip_upper, dftd3_hess, kx, ky, kz, lmultipole, &
+                       lhubbard_soc, hubbard_conv, hubbard_conv_thr
 
   ! tr2_ph       : convergence threshold
   ! amass        : atomic masses
@@ -195,6 +197,10 @@ SUBROUTINE phq_readin()
   !
   ! read_dns_bare : If .true. the code tries to read three files in DFPT+U calculations:
   !                 dnsorth, dnsbare, d2nsbare
+  ! lhubbard_soc  : DFPT+U - if .true. enable the noncollinear/SOC fixed-Dudarev
+  !                 response (magnetic insulators, NCPP, atomic projectors)
+  ! hubbard_conv  : DFPT+U, with lhubbard_soc - convergence test of the Hubbard occupation
+  !                 response: 'potential' (default), 'relative' or 'none'
   ! d2ns_type     : DFPT+U - the 2nd bare derivative of occupation matrices ns
   !                 (d2ns_bare matrix). Experimental! This is why it is not documented in Doc.
   !                 d2ns_type='full': matrix calculated with no approximation.
@@ -346,6 +352,9 @@ SUBROUTINE phq_readin()
   !
   lshift_q = .false.
   read_dns_bare =.false.
+  lhubbard_soc = .false.
+  hubbard_conv = 'potential'
+  hubbard_conv_thr = -1.0_DP
   d2ns_type = 'full'
   !
   ! ...  reading the namelist inputph
@@ -545,7 +554,10 @@ SUBROUTINE phq_readin()
         CALL errore ('phq_readin', 'gamma is needed for elec.field', 1)
   ENDIF
 
-  IF (magnetic_sym.AND.(epsil.OR.zue.or.lraman.or.elop)) &
+  ! Static epsil/BEC of a magnetic noncollinear state is available only
+  ! for DFPT+U with lhubbard_soc (one Sternheimer branch).
+  IF (magnetic_sym .AND. (lraman .OR. elop .OR. &
+      ((epsil .OR. zue) .AND. .NOT.lhubbard_soc))) &
           CALL errore ('phq_readin', ' The phonon code with noncollinear magnetism &
             & and electric field is not implemented', 1)
 
@@ -776,10 +788,45 @@ SUBROUTINE phq_readin()
           " Electron-phonon with Hubbard U is not supported",1)
      IF (lraman) CALL errore("phq_readin", &
           " The phonon code with Raman and Hubbard U is not implemented",1)
-     IF (magnetic_sym) CALL errore("phq_readin", &
-          " The phonon code with noncollinear magnetism and Hubbard U is not implemented", 1)
+     IF (noncolin) THEN
+        !
+        ! Noncollinear/SOC fixed-Dudarev DFPT+U is enabled only by lhubbard_soc
+        ! and only for magnetic NCPP insulators with atomic projectors.
+        !
+        IF (.NOT.lhubbard_soc) CALL errore("phq_readin", &
+             " Noncollinear/SOC DFPT+U requires lhubbard_soc=.true.", 1)
+        IF (.NOT.domag) CALL errore("phq_readin", &
+             " lhubbard_soc requires a magnetic state", 1)
+        IF (okvan .OR. okpaw) CALL errore("phq_readin", &
+             " lhubbard_soc requires norm-conserving pseudopotentials", 1)
+        IF (lgauss .OR. ltetra) CALL errore("phq_readin", &
+             " lhubbard_soc requires insulating occupations", 1)
+        IF (orbital_resolved) CALL errore("phq_readin", &
+             " lhubbard_soc does not support orbital-resolved Hubbard U", 1)
+        IF (ldisp .AND. lshift_q) CALL errore("phq_readin", &
+             " lhubbard_soc does not support a shifted q mesh", 1)
+        IF (((.NOT.trans) .AND. (.NOT.epsil)) .OR. elop .OR. fpol) &
+             CALL errore("phq_readin", &
+             " lhubbard_soc permits phonons and static epsil/BEC only", 1)
+        IF (only_wfc) CALL errore("phq_readin", &
+             " lhubbard_soc does not support only_wfc", 1)
+        IF (read_dns_bare) CALL errore("phq_readin", &
+             " lhubbard_soc recomputes the bare response; unset read_dns_bare", 1)
+        WRITE(stdout,'(5x,a)') "Noncollinear/SOC DFPT+U enabled (lhubbard_soc)"
+     ENDIF
      !
   ENDIF
+  IF (lhubbard_soc .AND. .NOT.(lda_plus_u .AND. noncolin)) CALL errore('phq_readin', &
+       'lhubbard_soc=.true. requires a noncollinear DFT+U ground state', 1)
+  hubbard_conv = ADJUSTL(hubbard_conv)
+  IF (TRIM(hubbard_conv) /= 'potential' .AND. TRIM(hubbard_conv) /= 'relative' .AND. &
+      TRIM(hubbard_conv) /= 'none') CALL errore('phq_readin', &
+       "hubbard_conv must be 'potential', 'relative' or 'none'", 1)
+  IF (TRIM(hubbard_conv) /= 'potential' .AND. .NOT.lhubbard_soc) CALL errore('phq_readin', &
+       'hubbard_conv is used only with lhubbard_soc=.true.', 1)
+  IF (hubbard_conv_thr > 0.0_DP .AND. (.NOT.lhubbard_soc .OR. TRIM(hubbard_conv) == 'none')) &
+       CALL errore('phq_readin', &
+       "hubbard_conv_thr needs lhubbard_soc=.true. and hubbard_conv /= 'none'", 1)
   ! checks
   IF (elph_ahc .AND. domag) CALL errore ('phq_readin', &
     'elph_ahc and magnetism not implemented', 1)

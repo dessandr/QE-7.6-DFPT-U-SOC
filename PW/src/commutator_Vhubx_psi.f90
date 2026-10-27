@@ -40,7 +40,7 @@ SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
   USE klist,          ONLY : xk, ngk, igk_k
   USE cell_base,      ONLY : tpiba
   USE gvect,          ONLY : g
-  USE scf,            ONLY : rho
+  USE scf,            ONLY : rho, v
   USE mp,             ONLY : mp_sum
   USE mp_bands,       ONLY : intra_bgrp_comm
   USE buffers,        ONLY : get_buffer
@@ -60,7 +60,8 @@ SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
   !
   REAL(DP), PARAMETER :: eps = 1.0d-8
   INTEGER     :: na, n ,l, nt, nah, ikb , m, m1, m2, ibnd, ib, ig, jkb, i, &
-                 ihubst, ihubst1,  ihubst2, icart, op_spin, npw, offpm, offpmU
+                 ihubst, ihubst1, ihubst2, icart, op_spin, npw, offpm, offpmU, &
+                 is_bra, is_ket, iblock, ldim, row_first, row_active_last, ig_spin
   REAL(DP)    :: nsaux, g2k, gk_ig(3)
   REAL(DP), ALLOCATABLE :: xyz(:,:)
   REAL(DP), ALLOCATABLE :: gk_vpol(:)
@@ -69,6 +70,7 @@ SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
                  dpqq26(:,:), dpqq38(:,:), dpqq47(:,:), dkvkbbessel(:,:),          &
                  dkvkbylmr(:,:), dkvkb(:,:), aux_1234(:), termi(:,:), trm(:,:),    &
                  wfcatomk(:,:), swfcatomk(:,:), proj1(:,:), proj2(:,:), proj3(:,:)
+  COMPLEX(DP) :: vhub_element
   CALL start_clock( 'commutator_Vhubx_psi' )
   !
   ! Number of plane waves at point ik
@@ -77,26 +79,28 @@ SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
   ALLOCATE (proj1(nbnd_calc,nwfcU))
   ALLOCATE (proj2(nbnd_calc,nwfcU))
   ALLOCATE (proj3(nbnd_calc,nwfcU))
-  ALLOCATE (dkwfcbessel(npwx,natomwfc))
-  ALLOCATE (dkwfcylmr(npwx,natomwfc))
-  ALLOCATE (dkwfcatomk(npwx,nwfcU))
+  ALLOCATE (dkwfcbessel(npwx*npol,natomwfc))
+  ALLOCATE (dkwfcylmr(npwx*npol,natomwfc))
+  ALLOCATE (dkwfcatomk(npwx*npol,nwfcU))
   ALLOCATE (dpqq26(npwx,nwfcU))
   ALLOCATE (dpqq38(npwx,nwfcU))
   ALLOCATE (dpqq47(npwx,nwfcU))
-  ALLOCATE (wfcatomk(npwx,nwfcU))
-  ALLOCATE (swfcatomk(npwx,nwfcU))
+  ALLOCATE (wfcatomk(npwx*npol,nwfcU))
+  ALLOCATE (swfcatomk(npwx*npol,nwfcU))
   ALLOCATE (dkvkbbessel(npwx,nkb))
   ALLOCATE (dkvkbylmr(npwx,nkb))
   ALLOCATE (dkvkb(npwx,nkb))
-  ALLOCATE (aux_1234(npwx))
-  ALLOCATE (termi(npwx,nbnd_calc))
-  ALLOCATE (trm(npwx,nbnd_calc))
+  ALLOCATE (aux_1234(npwx*npol))
+  ALLOCATE (termi(npwx*npol,nbnd_calc))
+  ALLOCATE (trm(npwx*npol,nbnd_calc))
   ALLOCATE (xyz(3,3))
   ALLOCATE (gk_vpol(npw))
   !
   dpqq26     = (0.d0, 0.d0)
   dpqq38     = (0.d0, 0.d0)
   dpqq47     = (0.d0, 0.d0)
+  dkwfcbessel = (0.d0, 0.d0)
+  dkwfcylmr   = (0.d0, 0.d0)
   dkwfcatomk = (0.d0, 0.d0)
   dkvkb      = (0.d0, 0.d0)
   !
@@ -151,25 +155,126 @@ SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
      !
   ENDDO
   !
-  DO ig = 1, npw
+  IF (noncolin) THEN
      !
-     ! Derivative wrt crystal axis ipol
-     ! d|k+G|/d(k+G)_ipol = \sum_{icart} d|k+G|/d(k+G)_icart * at (icart,ipol)
-     ! The derivative is done for all the atomic wfc and for each ig
+     ! gen_at_dj/gen_at_dy already use the PW pure-up/pure-down spinor
+     ! projector layout.  Retain both spin components when selecting the
+     ! Hubbard manifold from the complete atomic basis.
      !
      DO na = 1, nat
-         nt = ityp(na)
-         IF (is_hubbard(nt)) THEN
-            offpmU = offsetU(na)
-            offpm  = oatwfc(na)
-            DO m1 = 1, 2*Hubbard_l(nt)+1
-               dkwfcatomk(ig,offpmU+m1) = dkwfcylmr(ig,offpm+m1)        &
-                                        + dkwfcbessel(ig,offpm+m1) * gk_vpol(ig)
-            ENDDO
-         ENDIF
+        nt = ityp(na)
+        IF (is_hubbard(nt)) THEN
+           ldim = 2*Hubbard_l(nt) + 1
+           offpmU = offsetU(na)
+           offpm  = oatwfc(na)
+           DO is_ket = 1, npol
+              DO m1 = 1, ldim
+                 ihubst = offpmU + m1 + ldim*(is_ket-1)
+                 i = offpm + m1 + ldim*(is_ket-1)
+                 DO ig = 1, npw
+                    ig_spin = ig + npwx*(is_ket-1)
+                    dkwfcatomk(ig_spin,ihubst) = dkwfcylmr(ig_spin,i) + &
+                         dkwfcbessel(ig_spin,i) * gk_vpol(ig)
+                 ENDDO
+              ENDDO
+           ENDDO
+        ENDIF
      ENDDO
      !
-  ENDDO
+  ELSE
+     DO ig = 1, npw
+        !
+        ! Derivative wrt crystal axis ipol
+        ! d|k+G|/d(k+G)_ipol = \sum_{icart} d|k+G|/d(k+G)_icart * at (icart,ipol)
+        ! The derivative is done for all the atomic wfc and for each ig
+        !
+        DO na = 1, nat
+            nt = ityp(na)
+            IF (is_hubbard(nt)) THEN
+               offpmU = offsetU(na)
+               offpm  = oatwfc(na)
+               DO m1 = 1, 2*Hubbard_l(nt)+1
+                  dkwfcatomk(ig,offpmU+m1) = dkwfcylmr(ig,offpm+m1)        &
+                                           + dkwfcbessel(ig,offpm+m1) * gk_vpol(ig)
+               ENDDO
+            ENDIF
+        ENDDO
+        !
+     ENDDO
+  ENDIF
+  !
+  ! Noncollinear NCPP path.  Reuse the ground-state PW spinor Hubbard
+  ! potential v%ns_nc in exactly the orbital-spin layout used by vhpsi_nc.
+  !
+  IF (noncolin) THEN
+     IF (okvan) CALL errore('commutator_Vhubx_psi', &
+                            'noncollinear USPP is outside the validation scope', 1)
+     !
+     proj1 = (0.d0, 0.d0)
+     proj2 = (0.d0, 0.d0)
+     proj3 = (0.d0, 0.d0)
+     !
+     DO nah = 1, nat
+        nt = ityp(nah)
+        IF (is_hubbard(nt)) THEN
+           ldim = 2*Hubbard_l(nt) + 1
+           DO is_ket = 1, npol
+              row_first = 1 + npwx*(is_ket-1)
+              row_active_last = npw + npwx*(is_ket-1)
+              DO m2 = 1, ldim
+                 ihubst2 = offsetU(nah) + m2 + ldim*(is_ket-1)
+                 DO ibnd = 1, nbnd_calc
+                    proj1(ibnd,ihubst2) = DOT_PRODUCT( &
+                         swfcatomk(row_first:row_active_last,ihubst2), &
+                         evc(row_first:row_active_last,ibnd))
+                    proj2(ibnd,ihubst2) = DOT_PRODUCT( &
+                         dkwfcatomk(row_first:row_active_last,ihubst2), &
+                         evc(row_first:row_active_last,ibnd))
+                 ENDDO
+              ENDDO
+           ENDDO
+        ENDIF
+     ENDDO
+     !
+     CALL mp_sum(proj1, intra_bgrp_comm)
+     CALL mp_sum(proj2, intra_bgrp_comm)
+     !
+     termi = (0.d0, 0.d0)
+     DO nah = 1, nat
+        nt = ityp(nah)
+        IF (is_hubbard(nt)) THEN
+           ldim = 2*Hubbard_l(nt) + 1
+           DO is_bra = 1, npol
+              row_first = 1 + npwx*(is_bra-1)
+              row_active_last = npw + npwx*(is_bra-1)
+              DO m1 = 1, ldim
+                 ihubst1 = offsetU(nah) + m1 + ldim*(is_bra-1)
+                 DO is_ket = 1, npol
+                    iblock = npol*(is_bra-1) + is_ket
+                    DO m2 = 1, ldim
+                       ihubst2 = offsetU(nah) + m2 + ldim*(is_ket-1)
+                       vhub_element = v%ns_nc(m1,m2,iblock,nah)
+                       DO ibnd = 1, nbnd_calc
+                          termi(row_first:row_active_last,ibnd) = &
+                               termi(row_first:row_active_last,ibnd) + &
+                               vhub_element * ( &
+                               dkwfcatomk(row_first:row_active_last,ihubst1) * &
+                               proj1(ibnd,ihubst2) + &
+                               swfcatomk(row_first:row_active_last,ihubst1) * &
+                               proj2(ibnd,ihubst2))
+                       ENDDO
+                    ENDDO
+                 ENDDO
+              ENDDO
+           ENDDO
+        ENDIF
+     ENDDO
+     !
+     DO ibnd = 1, nbnd_calc
+        dpsi(:,ibnd) = dpsi(:,ibnd) + (0.d0,-1.d0) * termi(:,ibnd)
+     ENDDO
+     GOTO 900
+  ENDIF
   !
   ! USPP case
   !
@@ -377,6 +482,7 @@ SUBROUTINE commutator_Vhubx_psi(ik, nbnd_calc, vpol, dpsi)
      !
   ENDDO
   !
+900 CONTINUE
   DEALLOCATE (proj1)
   DEALLOCATE (proj2)
   DEALLOCATE (proj3)
@@ -470,4 +576,3 @@ SUBROUTINE vecqqproj (npw, vec1, vec2, vec3, dpqq)
     RETURN
     !
 END SUBROUTINE vecqqproj
-
