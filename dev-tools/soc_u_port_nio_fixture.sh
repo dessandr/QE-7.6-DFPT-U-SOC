@@ -28,6 +28,8 @@ tr2=${SOC_U_NIO_TR2:-1d-12}
 conv76="hubbard_conv='${SOC_U_NIO_HUBCONV:-relative}', "
 # SOC_U_NIO_HUBTHR: hubbard_conv_thr of the 7.6 runs (default: not set, sqrt(tr2_ph))
 [[ -n ${SOC_U_NIO_HUBTHR:-} ]] && conv76="${conv76}hubbard_conv_thr=${SOC_U_NIO_HUBTHR}, "
+# SOC_U_NIO_ALPHA: alpha_mix(1) of the phonon runs (default 0.3)
+alpha=${SOC_U_NIO_ALPHA:-0.3}
 # SOC_U_NIO_NOSYM=1: no symmetry (isolates symmetrization differences)
 # SOC_U_NIO_SHIFT=dx: move the first O by dx (alat) along x, removing the
 #   inversion centre at Ni so that the bare occupation response is nonzero
@@ -92,16 +94,17 @@ PWIN
 case $mode in
   bare76) extra="lhubbard_soc=.true., only_init=.true.," ;;
   bare73) extra="only_init=.true.," ;;
-  full76) extra="lhubbard_soc=.true., ${conv76}tr2_ph=$tr2, alpha_mix(1)=0.3," ;;
-  full73) extra="tr2_ph=$tr2, alpha_mix(1)=0.3," ;;
+  full76) extra="lhubbard_soc=.true., ${conv76}tr2_ph=$tr2, alpha_mix(1)=$alpha," ;;
+  full73) extra="tr2_ph=$tr2, alpha_mix(1)=$alpha," ;;
   efield76) extra="lhubbard_soc=.true., ${conv76}trans=.false., epsil=.true., zeu=.true., tr2_ph=$tr2," ;;
   efield73) extra="trans=.false., epsil=.true., zeu=.true., tr2_ph=$tr2," ;;
-  plain) extra="tr2_ph=$tr2, alpha_mix(1)=0.3," ;;
+  plain) extra="tr2_ph=$tr2, alpha_mix(1)=$alpha," ;;
   efieldc) extra="trans=.false., epsil=.true., zeu=.true., tr2_ph=$tr2," ;;
-  fullc) extra="tr2_ph=$tr2, alpha_mix(1)=0.3," ;;
+  fullc) extra="tr2_ph=$tr2, alpha_mix(1)=$alpha," ;;
   *) echo "unknown MODE $mode" >&2; exit 2 ;;
 esac
-# SOC_U_NIO_PHEXTRA: extra &inputph text (e.g. "max_seconds=120, " or "recover=.true., ")
+# SOC_U_NIO_PHEXTRA: extra &inputph text (e.g. "max_seconds=120, ", "recover=.true., ",
+#   "nmix_ph=12, hubbard_mix='linear', alpha_mix_hub=1.0, ")
 extra="$extra ${SOC_U_NIO_PHEXTRA:-}"
 printf "NiO\n&inputph\n  prefix='NiO', outdir='./out', fildyn='NiO.dyn', verbosity='high',\n  %s\n/\n%s\n" \
   "$extra" "$q" > ph.in

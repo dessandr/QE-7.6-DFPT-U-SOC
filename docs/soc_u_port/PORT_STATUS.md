@@ -553,3 +553,47 @@ Fixture: new optional SOC_U_NIO_ECUTWFC and SOC_U_NIO_K (defaults unchanged).
 - 2026-10-27: committed on branch soc-u-port (9ad5313 port, 20a3e47
   noncollinear GGA fixes, fc3a8b4 tools/docs) and pushed with the pristine
   baseline main to github.com:dessandr/QE-7.6-DFPT-U-SOC (user request).
+
+## 2026-10-27: Hubbard mixing options (user request)
+
+- Diagnosis (nlcc/tr18_lda_off_thr7): in the Hubbard-active irreps 3, 6, 12
+  the Hxc residual reaches tr2_ph after ~20 iterations, then the Hubbard
+  residual decays by 0.71-0.80 per iteration, the linear-mixing rate of
+  alpha_mix 0.3 (>= 0.7 for any 0 <= mu < 1): Broyden with nmix_ph = 4 adds
+  little for the many slow onsite modes (5x5 x 4 spin x 2 Ni x npert).
+- New inputs (ldaU_lr, phq_readin, bcast_ph_input, dfpt_kernels, mix_pot,
+  INPUT_PH.def), only with lhubbard_soc:
+  `hubbard_mix` = 'joint' (default, as before) or 'linear' (Broyden on Hxc
+  only, dN_in += alpha_mix_hub (dN_out - dN_in)); `alpha_mix_hub` = Hubbard
+  block step, the initial Broyden step of U*dN for 'joint' (default
+  alpha_mix) or the linear factor for 'linear' (default 1 = unmixed dN, the
+  original separate scheme). `mix_potential_core` takes a second step
+  alpha_aux for the components after nconv (block-diagonal initial inverse
+  Jacobian); equal steps reproduce the old arithmetic. Fixture:
+  SOC_U_NIO_ALPHA (alpha_mix, default 0.3).
+- Default unchanged: NiO dyn bitwise identical to nlcc/tr18_lda_off_thr7
+  (job 887); regression set identical to regress/hubthr (26 files; all but
+  the Fe SOC GGA case also identical to pristine, the Fe difference being
+  the 2026-10-25 GGA fix) (`regress/hubmix`, hp.x rebuilt).
+- NiO Gamma, SOC LDA no NLCC, U=5.7, tr2_ph 1d-18, hubbard_conv_thr 1d-7
+  (`../qe-7.6-pert-buildlogs/efield-investigation/hubmix`, jobs 887-893;
+  cost = ch_psi calls, since pcs-gpu10 is ~1.8x faster per call than 06/07):
+
+  | variant | iterations (irreps 3/6/12) | ch_psi calls |
+  |---|---|---|
+  | default (alpha_mix 0.3, nmix_ph 4) | 241 (38/41/49) | 30813 |
+  | alpha_mix 0.7 | 193 (32/33/39) | 24456 |
+  | nmix_ph 12 | 180 (27/27/24) | 22702 |
+  | alpha_mix_hub 1.0 | 196 (29/28/26) | 24657 |
+  | hubbard_mix 'linear' | 337 (73/73/78) | 43032 |
+  | alpha_mix 0.7, nmix_ph 12 | 147 (22/22/20) | 18410 |
+  | alpha_mix 0.7, nmix_ph 12, alpha_mix_hub 1.0 | 141 (20/20/18) | 17592 |
+
+  All variants: FD agreement unchanged (even 8.2e-4, odd 1.1-1.2e-3), ASR
+  4.5e-3, optical modes within 0.013 cm^-1 of the default; acoustic modes
+  (-10 cm^-1) move by up to 0.17 cm^-1 (convergence noise).
+  'linear' oscillates: dN changes outside the Broyden vector make the Hxc
+  map non-stationary (dr2 jumps), so it is the slowest; kept as an option.
+- Recommendation for tight tr2_ph: alpha_mix(1)=0.7, nmix_ph=12,
+  alpha_mix_hub=1.0 (-43% work here). Defaults left unchanged. The ~1e-8 Ry
+  Hubbard floor (hubbard_conv_thr 1d-8) is a separate issue, not addressed.

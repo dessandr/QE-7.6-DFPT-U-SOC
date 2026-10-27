@@ -595,9 +595,9 @@ input_description -distribution {Quantum ESPRESSO} -package PHonon -program ph.x
             options {
                 info {
                     Used only with @ref lhubbard_soc: convergence test of the
-                    Hubbard occupation response dN, which is mixed together
-                    with the Hxc potential and must converge together with it
-                    (@ref tr2_ph):
+                    Hubbard occupation response dN (mixed as set by
+                    @ref hubbard_mix), which must converge together with the
+                    Hxc potential (@ref tr2_ph):
                 }
                 opt -val 'potential' {
                     max_I U_I |dN_out - dN_in| below sqrt(@ref tr2_ph) (Ry):
@@ -624,8 +624,40 @@ input_description -distribution {Quantum ESPRESSO} -package PHonon -program ph.x
                 (Ry for 'potential'), instead of sqrt(@ref tr2_ph). The
                 Hubbard response has a numerical floor of its own (about
                 1e-8 Ry in a NiO test), so a tight @ref tr2_ph (e.g. 1d-18)
-                needs a separate value such as 1d-8. A value <= 0 selects
+                needs a separate value such as 1d-7. A value <= 0 selects
                 the default.
+            }
+        }
+
+        var hubbard_mix -type CHARACTER {
+            default { 'joint' }
+            options {
+                info {
+                    Used only with @ref lhubbard_soc: mixing of the Hubbard
+                    occupation response dN between DFPT iterations.
+                }
+                opt -val 'joint' {
+                    U*dN and the Hxc potential response in one Broyden vector
+                    (@ref nmix_ph); @ref alpha_mix_hub is the initial step of
+                    the Hubbard coordinates.
+                }
+                opt -val 'linear' {
+                    Broyden mixing of the Hxc potential only;
+                    dN_in = dN_in + @ref alpha_mix_hub * (dN_out - dN_in).
+                    With @ref alpha_mix_hub = 1 (default) the unmixed dN_out
+                    is used, as in collinear DFPT+U.
+                }
+            }
+        }
+
+        var alpha_mix_hub -type REAL {
+            default { see info }
+            info {
+                Used only with @ref lhubbard_soc: mixing step of the Hubbard
+                block, 0 < alpha_mix_hub <= 2. With @ref hubbard_mix = 'joint'
+                the initial Broyden step of U*dN (default: @ref alpha_mix);
+                with 'linear' the linear mixing factor of dN (default 1).
+                A value <= 0 selects the default.
             }
         }
         }

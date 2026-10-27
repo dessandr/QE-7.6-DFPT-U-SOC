@@ -248,6 +248,15 @@ MODULE ldaU_lr
   REAL(DP) :: hubbard_conv_thr = -1.0_DP
   !! Input (&INPUTPH), with lhubbard_soc: threshold of the Hubbard test
   !! (Ry for 'potential'); <= 0: sqrt(tr2_ph).
+  CHARACTER(LEN=16) :: hubbard_mix = 'joint'
+  !! Input (&INPUTPH), with lhubbard_soc: mixing of the Hubbard occupation
+  !! response dN.
+  !! 'joint' : U*dN and the Hxc potential in one Broyden vector;
+  !! 'linear': Broyden on the Hxc potential only, linear mixing of dN.
+  REAL(DP) :: alpha_mix_hub = -1.0_DP
+  !! Input (&INPUTPH), with lhubbard_soc: step of the Hubbard block, the
+  !! initial Broyden step of U*dN ('joint') or the linear mixing factor of dN
+  !! ('linear'); <= 0: alpha_mix ('joint') or 1 ('linear', unmixed dN).
   LOGICAL :: hub_bare_time_reversed = .FALSE.
   !! Set by the caller of dvqpsi_us for the second (time-reversed)
   !! magnetic Sternheimer branch; selects the reversed bare Hubbard term

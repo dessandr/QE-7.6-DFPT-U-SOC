@@ -71,7 +71,8 @@ SUBROUTINE phq_readin()
   USE ktetra,        ONLY : tetra_type
   USE ldaU,          ONLY : lda_plus_u, Hubbard_projectors, lda_plus_u_kind, &
                             is_hubbard_back, orbital_resolved
-  USE ldaU_lr,       ONLY : lhubbard_soc, hubbard_conv, hubbard_conv_thr
+  USE ldaU_lr,       ONLY : lhubbard_soc, hubbard_conv, hubbard_conv_thr, &
+                            hubbard_mix, alpha_mix_hub
   USE ldaU_ph,       ONLY : read_dns_bare, d2ns_type
   USE dvscf_interpolate, ONLY : ldvscf_interpolate, do_long_range, &
       do_charge_neutral, wpot_dir
@@ -129,7 +130,8 @@ SUBROUTINE phq_readin()
                        ldvscf_interpolate, do_long_range, do_charge_neutral, &
                        wpot_dir, ahc_dir, ahc_nbnd, ahc_nbndskip, &
                        skip_upper, dftd3_hess, kx, ky, kz, lmultipole, &
-                       lhubbard_soc, hubbard_conv, hubbard_conv_thr
+                       lhubbard_soc, hubbard_conv, hubbard_conv_thr, &
+                       hubbard_mix, alpha_mix_hub
 
   ! tr2_ph       : convergence threshold
   ! amass        : atomic masses
@@ -201,6 +203,12 @@ SUBROUTINE phq_readin()
   !                 response (magnetic insulators, NCPP, atomic projectors)
   ! hubbard_conv  : DFPT+U, with lhubbard_soc - convergence test of the Hubbard occupation
   !                 response: 'potential' (default), 'relative' or 'none'
+  ! hubbard_conv_thr : DFPT+U, with lhubbard_soc - threshold of the Hubbard test
+  ! hubbard_mix   : DFPT+U, with lhubbard_soc - mixing of the occupation response:
+  !                 'joint' (default, one Broyden vector with the Hxc potential)
+  !                 or 'linear' (Broyden on Hxc only, linear mixing of dN)
+  ! alpha_mix_hub : DFPT+U, with lhubbard_soc - step of the Hubbard block
+  !                 (<= 0: alpha_mix for 'joint', 1 for 'linear')
   ! d2ns_type     : DFPT+U - the 2nd bare derivative of occupation matrices ns
   !                 (d2ns_bare matrix). Experimental! This is why it is not documented in Doc.
   !                 d2ns_type='full': matrix calculated with no approximation.
@@ -355,6 +363,8 @@ SUBROUTINE phq_readin()
   lhubbard_soc = .false.
   hubbard_conv = 'potential'
   hubbard_conv_thr = -1.0_DP
+  hubbard_mix = 'joint'
+  alpha_mix_hub = -1.0_DP
   d2ns_type = 'full'
   !
   ! ...  reading the namelist inputph
@@ -827,6 +837,13 @@ SUBROUTINE phq_readin()
   IF (hubbard_conv_thr > 0.0_DP .AND. (.NOT.lhubbard_soc .OR. TRIM(hubbard_conv) == 'none')) &
        CALL errore('phq_readin', &
        "hubbard_conv_thr needs lhubbard_soc=.true. and hubbard_conv /= 'none'", 1)
+  hubbard_mix = ADJUSTL(hubbard_mix)
+  IF (TRIM(hubbard_mix) /= 'joint' .AND. TRIM(hubbard_mix) /= 'linear') &
+       CALL errore('phq_readin', "hubbard_mix must be 'joint' or 'linear'", 1)
+  IF ((TRIM(hubbard_mix) /= 'joint' .OR. alpha_mix_hub > 0.0_DP) .AND. .NOT.lhubbard_soc) &
+       CALL errore('phq_readin', &
+       'hubbard_mix and alpha_mix_hub are used only with lhubbard_soc=.true.', 1)
+  IF (alpha_mix_hub > 2.0_DP) CALL errore('phq_readin', 'alpha_mix_hub must be <= 2', 1)
   ! checks
   IF (elph_ahc .AND. domag) CALL errore ('phq_readin', &
     'elph_ahc and magnetism not implemented', 1)

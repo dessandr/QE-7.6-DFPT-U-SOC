@@ -100,7 +100,7 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
    USE scf,                  ONLY : rho
    USE ldaU,                 ONLY : lda_plus_u, is_hubbard, Hubbard_l
    USE ldaU_lr,              ONLY : dnsscf, effU, hub_dnsq_single_branch, hubbard_conv, &
-                                    hubbard_conv_thr
+                                    hubbard_conv_thr, hubbard_mix, alpha_mix_hub
    USE hubbard_response_mixing, ONLY : mix_hubbard_response
    USE control_flags,        ONLY : iverbosity
    USE uspp,                 ONLY : okvan
@@ -325,6 +325,9 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
          dnsscf_input = dnsscf
       ENDIF
       WRITE(stdout,'(5x,a,1x,i0)') 'SOC_U_JOINT_MIXING_BEGIN', iter0
+      ! alpha_mix_hub <= 0: alpha_mix ('joint') or 1 ('linear')
+      WRITE(stdout,'(5x,a,1x,a,1x,es12.4)') 'SOC_U_HUBBARD_MIX', &
+           TRIM(hubbard_mix), alpha_mix_hub
    ENDIF
    !
    ! Loop over DFPT self-consistent iterations
@@ -541,7 +544,8 @@ SUBROUTINE dfpt_kernel(code, npert, iter0, lrdvpsi, iudvpsi, dr2, dfpt_data, &
               hubbard_convt, hxc_grid_size=mixing_grid_size, metric_info=mix_metric_info, &
               require_hubbard_convergence=(TRIM(hubbard_conv) /= 'none'), &
               hubbard_criterion=MERGE('potential', 'relative ', TRIM(hubbard_conv) == 'potential'), &
-              hub_pot_residual=hub_pot_residual)
+              hub_pot_residual=hub_pot_residual, hubbard_mix=TRIM(hubbard_mix), &
+              alpha_hub=alpha_mix_hub)
          WRITE(stdout,'(5x,a,1x,i0,3(1x,es24.16))') &
               'SOC_U_JOINT_MIXING_METRIC', iter, mix_metric_info
          WRITE(stdout,'(5x,a,1x,i0,2(1x,es24.16),1x,l1)') &

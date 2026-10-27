@@ -42,7 +42,8 @@ subroutine bcast_ph_input ( )
   ! YAMBO <
   USE elph_tetra_mod, ONLY : lshift_q
   USE ldaU_ph,        ONLY : read_dns_bare, d2ns_type
-  USE ldaU_lr,        ONLY : lhubbard_soc, hubbard_conv, hubbard_conv_thr
+  USE ldaU_lr,        ONLY : lhubbard_soc, hubbard_conv, hubbard_conv_thr, &
+                             hubbard_mix, alpha_mix_hub
   USE dvscf_interpolate, ONLY : ldvscf_interpolate, do_long_range, &
       do_charge_neutral, wpot_dir
   USE ahc,           ONLY : elph_ahc, ahc_dir, ahc_nbnd, ahc_nbndskip, &
@@ -76,6 +77,8 @@ subroutine bcast_ph_input ( )
   call mp_bcast (lhubbard_soc, meta_ionode_id, world_comm)
   call mp_bcast (hubbard_conv, meta_ionode_id, world_comm)
   call mp_bcast (hubbard_conv_thr, meta_ionode_id, world_comm)
+  call mp_bcast (hubbard_mix, meta_ionode_id, world_comm)
+  call mp_bcast (alpha_mix_hub, meta_ionode_id, world_comm)
   call mp_bcast (lmultipole, meta_ionode_id, world_comm )
   ! YAMBO >
   call mp_bcast (elph_yambo, meta_ionode_id, world_comm)

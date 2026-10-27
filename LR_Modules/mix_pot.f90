@@ -16,7 +16,8 @@ CONTAINS
   SUBROUTINE mix_hubbard_response(hxc_out, hxc_in, hub_out, hub_in, ueff, &
        ldim, alphamix, dr2, tr2, rtol, iter, n_iter, file_extension, conv, &
        hub_residual, hub_scale, hub_relative, hub_convt, hxc_grid_size, metric_info, &
-       require_hubbard_convergence, hubbard_criterion, hub_pot_residual)
+       require_hubbard_convergence, hubbard_criterion, hub_pot_residual, &
+       hubbard_mix, alpha_hub)
     USE, INTRINSIC :: ieee_arithmetic, ONLY : ieee_is_finite
     USE mp_bands, ONLY : intra_bgrp_comm
     USE mp, ONLY : mp_sum
@@ -44,11 +45,17 @@ CONTAINS
     ! when the response vanishes by symmetry.
     REAL(DP), OPTIONAL, INTENT(OUT) :: hub_pot_residual
     ! max_I U_I*max|dN_out-dN_in| (Ry)
+    CHARACTER(LEN=*), OPTIONAL, INTENT(IN) :: hubbard_mix
+    ! 'joint' (default): U*dN in the Hxc Broyden vector, with initial step
+    ! alpha_hub; 'linear': Broyden on the Hxc potential alone and
+    ! dN_in <- dN_in + alpha_hub*(dN_out-dN_in).
+    REAL(DP), OPTIONAL, INTENT(IN) :: alpha_hub
+    ! <= 0 or absent: alphamix ('joint') or 1 ('linear')
     INTEGER :: nhxc, nhub, nlocal, na, ld, nreal, nactive
     REAL(DP) :: roundoff_floor, field_count, allocated_count, hub_weight
-    REAL(DP) :: hxc_r2, hub_pot_r2, hub_pot_max
-    LOGICAL :: auxiliary_convt, potential_criterion
-    COMPLEX(DP), ALLOCATABLE :: pot_in(:,:,:,:,:), pot_out(:,:,:,:,:)
+    REAL(DP) :: hxc_r2, hub_pot_r2, hub_pot_max, alpha_onsite
+    LOGICAL :: auxiliary_convt, potential_criterion, linear_mixing
+    COMPLEX(DP), ALLOCATABLE :: pot_in(:,:,:,:,:), pot_out(:,:,:,:,:), hub_prev(:,:,:,:,:)
     COMPLEX(DP), ALLOCATABLE :: flat_in(:), flat_out(:), mixin(:), mixout(:)
     COMPLEX(DP), ALLOCATABLE :: field_in(:), field_out(:)
     REAL(DP), ALLOCATABLE :: real_in(:), real_out(:)
@@ -98,6 +105,22 @@ CONTAINS
           CALL errore('mix_hubbard_response', 'unknown Hubbard convergence criterion', 1)
        END SELECT
     ENDIF
+    linear_mixing = .FALSE.
+    IF (PRESENT(hubbard_mix)) THEN
+       SELECT CASE (TRIM(hubbard_mix))
+       CASE ('joint')
+       CASE ('linear')
+          linear_mixing = .TRUE.
+       CASE DEFAULT
+          CALL errore('mix_hubbard_response', 'unknown Hubbard mixing mode', 1)
+       END SELECT
+    ENDIF
+    alpha_onsite = MERGE(1.0_DP, alphamix, linear_mixing)
+    IF (PRESENT(alpha_hub)) THEN
+       IF (alpha_hub > 0.0_DP) alpha_onsite = alpha_hub
+    ENDIF
+    IF (.NOT.ieee_is_finite(alpha_onsite)) &
+       CALL errore('mix_hubbard_response', 'nonfinite Hubbard mixing step', 1)
     nactive = 0
     DO na = 1, SIZE(ueff)
        ld = ldim(na)
@@ -140,10 +163,38 @@ CONTAINS
        real_in = TRANSFER(hxc_in,real_in)
        real_out = TRANSFER(hxc_out,real_out)
        CALL mix_potential_core(nreal,real_out,real_in,alphamix,dr2,tr2,iter, &
-            n_iter,file_extension,conv,nreal,.TRUE.)
+            n_iter,file_extension,conv,nreal,.TRUE.,alphamix)
        hxc_in = RESHAPE(TRANSFER(real_in,hxc_in),SHAPE(hxc_in))
        hub_in = hub_out
        DEALLOCATE(real_in,real_out,pot_in,pot_out)
+       CALL stop_clock('mix_hubbard')
+       RETURN
+    ENDIF
+    auxiliary_convt = hub_convt
+    IF (PRESENT(require_hubbard_convergence)) THEN
+       IF (.NOT.require_hubbard_convergence) auxiliary_convt = .TRUE.
+    ENDIF
+    IF (linear_mixing) THEN
+       ! Broyden on the Hxc potential alone; the Hubbard test still gates the
+       ! exit. alpha_onsite = 1 uses the unmixed dN_out, as collinear DFPT+U.
+       IF (PRESENT(metric_info)) metric_info(2:3) = &
+            [SQRT(hub_pot_r2/REAL(nactive,DP)),0.0_DP]
+       nreal = 2*nhxc
+       ALLOCATE(real_in(nreal),real_out(nreal))
+       real_in = TRANSFER(hxc_in,real_in)
+       real_out = TRANSFER(hxc_out,real_out)
+       CALL mix_potential_core(nreal,real_out,real_in,alphamix,dr2,tr2,iter, &
+            n_iter,file_extension,conv,nreal,auxiliary_convt,alphamix)
+       hxc_in = RESHAPE(TRANSFER(real_in,hxc_in),SHAPE(hxc_in))
+       ALLOCATE(hub_prev, SOURCE=hub_in)
+       hub_in = hub_out
+       DO na = 1, SIZE(ueff)
+          ld = ldim(na)
+          IF (ld == 0 .OR. ueff(na) == 0.0_DP) CYCLE
+          hub_in(1:ld,1:ld,:,na,:) = hub_prev(1:ld,1:ld,:,na,:) + alpha_onsite* &
+               (hub_out(1:ld,1:ld,:,na,:)-hub_prev(1:ld,1:ld,:,na,:))
+       ENDDO
+       DEALLOCATE(real_in,real_out,pot_in,pot_out,hub_prev)
        CALL stop_clock('mix_hubbard')
        RETURN
     ENDIF
@@ -173,12 +224,8 @@ CONTAINS
     ALLOCATE(real_in(nreal),real_out(nreal))
     real_in = TRANSFER(mixin(1:nhxc+nlocal),real_in)
     real_out = TRANSFER(mixout(1:nhxc+nlocal),real_out)
-    auxiliary_convt = hub_convt
-    IF (PRESENT(require_hubbard_convergence)) THEN
-       IF (.NOT.require_hubbard_convergence) auxiliary_convt = .TRUE.
-    ENDIF
     CALL mix_potential_core(nreal,real_out,real_in,alphamix,dr2,tr2,iter, &
-         n_iter,file_extension,conv,2*nhxc,auxiliary_convt)
+         n_iter,file_extension,conv,2*nhxc,auxiliary_convt,alpha_onsite)
     mixin(1:nhxc+nlocal) = TRANSFER(real_in,mixin(1:nhxc+nlocal))
     CALL setmixout(nhxc,nhub,mixin,field_in,flat_in,nlocal,1)
     hxc_in = RESHAPE(field_in,SHAPE(hxc_in))
@@ -205,12 +252,12 @@ SUBROUTINE mix_potential(ndim,vout,vin,alphamix,dr2,tr2,iter,n_iter,file_extensi
   CHARACTER(LEN=256) :: file_extension
   LOGICAL :: conv
   CALL mix_potential_core(ndim,vout,vin,alphamix,dr2,tr2,iter,n_iter, &
-       file_extension,conv,ndim,.TRUE.)
+       file_extension,conv,ndim,.TRUE.,alphamix)
 END SUBROUTINE mix_potential
 
 !-----------------------------------------------------------------------
 subroutine mix_potential_core (ndim, vout, vin, alphamix, dr2, tr2, &
-     iter, n_iter, file_extension, conv, nconv, auxiliary_convt)
+     iter, n_iter, file_extension, conv, nconv, auxiliary_convt, alpha_aux)
   !-----------------------------------------------------------------------
   !
   ! Modified Broyden's method for potential/charge density mixing
@@ -220,6 +267,8 @@ subroutine mix_potential_core (ndim, vout, vin, alphamix, dr2, tr2, &
   !    vout      output potential/rho at current iteration
   !    vin       potential/rho at previous iteration
   !    alphamix  mixing factor (0 < alphamix <= 1)
+  !    alpha_aux mixing factor of the components after nconv (block-diagonal
+  !              initial inverse Jacobian; alpha_aux = alphamix: standard)
   !    tr2       threshold for selfconsistency
   !    iter      current iteration number
   !    n_iter    number of iterations used in the mixing
@@ -245,7 +294,7 @@ subroutine mix_potential_core (ndim, vout, vin, alphamix, dr2, tr2, &
   !
   character (len=256) :: file_extension
   integer :: ndim, iter, n_iter, nconv
-  real(DP) :: vout (ndim), vin (ndim), alphamix, dr2, tr2
+  real(DP) :: vout (ndim), vin (ndim), alphamix, dr2, tr2, alpha_aux
   logical :: conv, auxiliary_convt
   !
   !   Here the local variables
@@ -418,8 +467,11 @@ subroutine mix_potential_core (ndim, vout, vin, alphamix, dr2, tr2, &
      !
   end if
   !
-  do n = 1, ndim
+  do n = 1, nconv
      vin (n) = vin (n) + alphamix * vout (n)
+  enddo
+  do n = nconv + 1, ndim
+     vin (n) = vin (n) + alpha_aux * vout (n)
   enddo
   !
   do i = 1, iter_used
@@ -428,8 +480,11 @@ subroutine mix_potential_core (ndim, vout, vin, alphamix, dr2, tr2, &
         gamma = gamma + beta (j, i) * w (j) * work (j)
      enddo
      !
-     do n = 1, ndim
+     do n = 1, nconv
         vin (n) = vin (n) - w (i) * gamma * (alphamix * df (n, i) + dv (n, i) )
+     enddo
+     do n = nconv + 1, ndim
+        vin (n) = vin (n) - w (i) * gamma * (alpha_aux * df (n, i) + dv (n, i) )
      enddo
   enddo
   !
