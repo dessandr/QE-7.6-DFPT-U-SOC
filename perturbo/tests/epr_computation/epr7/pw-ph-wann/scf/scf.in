@@ -1,0 +1,37 @@
+ &control
+    calculation='scf',
+    prefix='gan',
+    pseudo_dir = '../pseudo',
+    outdir='./tmp'
+    wf_collect = .false.
+    verbosity = 'high'
+ /
+ &system
+    ibrav = 0, 
+    !celldm(3) = 1.62919447292, 
+    nat=  4, 
+    ntyp= 2,
+    ecutwfc = 80.0
+ /
+ &electrons
+    mixing_beta     =   0.7
+    conv_thr        =   1.0d-12
+    diago_full_acc  = .TRUE. 
+ /
+ATOMIC_SPECIES
+ Ga  69.723  Ga_SR_nlcc_PBEsol.upf
+ N   14.007  N_SR_nlcc_PBEsol.upf
+
+ATOMIC_POSITIONS crystal 
+ Ga  0.33333333333333   0.66666666666667   0.99912000000000
+ Ga  0.66666666666667   0.33333333333333   0.49912000000000
+ N  0.33333333333333   0.66666666666667   0.37588000000000 
+ N  0.66666666666667   0.33333333333333   0.87588000000000  
+
+K_POINTS {automatic}
+8 8 8  0 0 0
+
+CELL_PARAMETERS angstrom
+     3.21629006671087     0.00000000000000     0.00000000000000 
+    -1.60814503335543     2.78538890371116     0.00000000000000 
+     0.00000000000000     0.00000000000000     5.23996200000000 

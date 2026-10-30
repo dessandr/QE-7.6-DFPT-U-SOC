@@ -1,0 +1,512 @@
+#
+# The Perturbo tests are organized by corresponding epr HDF5 files: 
+# epr1, epr2, etc.
+# Each epr file has a set of tests associated with it. 
+# Each test has a correspoding folder, the foldername is made in the following way:
+# epr<n>-<testname>, where n is the index of the epr file 
+# and <testname> is a name of a given test.
+#
+epr1:
+   prefix: gaas
+   filename: gaas_epr.h5
+   SOC: True
+   polar: True
+   description: "GaAs with SOC"
+   pseudopotential: Ga and As from Pseudo-Dojo
+   tags:
+      - SOC
+      - polar
+      - norm-conserving
+      - lda
+      - fully-relativistic
+   tests:
+      bands:
+          - high-sym-k
+          - bands
+          - cpu
+      spins:
+          - high-sym-k
+          - spins
+          - bands
+          - cpu
+      phdisp:
+          - high-sym-q
+          - phdisp
+          - cpu
+      ephmat:
+          - ephmat
+          - random-k
+          - random-q
+          - uniform
+          - cpu
+      ephmat-spin:
+          - ephmat-spin
+          - random-k
+          - random-q
+          - uniform
+          - cpu
+      setup:
+          - setup
+          - HDF5-output
+          - cpu
+      setup-find-efermi:
+          - setup
+          - HDF5-output
+          - find_efermi
+          - cpu
+      imsigma:
+          - imsigma
+          - random-q
+          - cpu
+      imsigma-dense:
+          - imsigma-dense
+          - cpu
+      imsigma-spin:
+          - imsigma-spin
+          - random-q
+          - cpu
+      meanfp:
+          - meanfp
+          - load-imsigma
+          - random-q
+          - cpu
+      meanfp-dense:
+          - meanfp-dense
+          - cpu
+      spin-lifetime:
+          - spin-lifetime
+          - load-imsigma-flip
+          - cpu
+      trans-rta:
+          - trans
+          - trans-rta
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      trans-rta-gpu:
+          - trans
+          - trans-rta
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - gpu
+      trans-ita:
+          - trans
+          - trans-ita
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      trans-ita-gpu:
+          - trans
+          - trans-ita
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - gpu
+      trans-ita-dense:
+          - trans
+          - trans-ita-dense
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      trans-ita-dense-gpu:
+          - trans
+          - trans-ita-dense
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - gpu
+      trans-ita-w-ims:
+          - trans
+          - trans-ita
+          - compute-eph
+          - load-imsigma
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      trans-ita-w-ims-gpu:
+          - trans
+          - trans-ita
+          - compute-eph
+          - load-imsigma
+          - HDF5-output
+          - HDF5-load
+          - gpu
+      trans-rta-w-ims:
+          - trans
+          - trans-rta-w-ims
+          - load-imsigma
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      trans-rta-w-ims-gpu:
+          - trans
+          - trans-rta-w-ims
+          - load-imsigma
+          - HDF5-output
+          - HDF5-load
+          - gpu
+      trans-mag-rta:
+          - trans
+          - trans-mag-rta
+          - magnetic
+          - load-imsigma
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      trans-mag-ita:
+          - trans
+          - trans-mag-ita
+          - magnetic
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      trans-rta-pp:
+          - trans
+          - trans-rta-pp
+          - postproc
+          - HDF5-load
+          - cpu
+      trans-ita-pp:
+          - trans
+          - trans-ita-pp
+          - compute-eph
+          - HDF5-load
+          - postproc
+          - cpu
+      trans-mag-pp:
+          - trans
+          - trans-mag-pp
+          - magnetic
+          - postproc
+          - HDF5-load
+          - cpu
+      dynamics-euler:
+          - dynamics
+          - dynamics-euler
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      dynamics-pump-pulse:
+          - dynamics
+          - dynamics-euler
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - cpu
+          - pump-pulse
+      dynamics-euler-gpu:
+          - dynamics
+          - dynamics-euler
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - gpu
+      dynamics-rk4:
+          - dynamics
+          - dynamics-rk4
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      dynamics-rk4-gpu:
+          - dynamics
+          - dynamics-rk4
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - gpu
+      dynamics-pp:
+          - dynamics
+          - dynamics-pp
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      dynamics-restart:
+          - dynamics
+          - dynamics-restart
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      dynamics-efield:
+          - dynamics
+          - dynamics-efield
+          - efield
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      dynamics-efield-pp:
+          - dynamics
+          - dynamics-efield-pp
+          - postproc
+          - efield
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      dynamics-efield-norm:
+          - dynamics
+          - dynamics-efield
+          - efield
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      dynamics-efield-norm-pp:
+          - dynamics
+          - dynamics-efield-norm-pp
+          - postproc
+          - efield
+          - HDF5-output
+          - HDF5-load
+          - cpu
+      dynamics-boltz-acc-thr:
+          - dynamics
+          - dynamics-efield
+          - efield
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - "param:boltz_acc_thr"
+          - cpu
+      dynamics-ph-mode-exclude:
+          - dynamics
+          - dynamics-efield
+          - efield
+          - compute-eph
+          - HDF5-output
+          - HDF5-load
+          - "param:ph_mode_exclude_ranges"
+          - cpu
+      spectral-se: 
+          - cumulant 
+          - random-q
+          - compute-eph
+          - HDF5-output
+          - cpu
+      spectral-re: 
+          - cumulant
+          - random-q 
+          - compute-eph
+          - cpu
+      cumulant: 
+          - cumulant 
+          - cpu
+
+
+
+
+epr2:
+   prefix: mos2
+   filename: mos2_epr.h5
+   SOC: True
+   polar: True
+   description: "MoS2 with SOC and 2D Coulomb cutoff"
+   pseudopotential: Mo and S from Pseudo-Dojo
+   tags:
+      - SOC
+      - polar
+      - norm-conserving
+      - lda
+      - fully-relativistic
+      - 2D cutoff
+      - cpu
+   tests:
+      bands:
+          - random-k
+          - uniform
+          - bands
+      phdisp:
+          - random-q
+          - uniform
+          - phdisp
+      ephmat:
+          - ephmat
+          - random-k
+          - random-q
+          - uniform
+
+epr3:
+   prefix: graphene
+   filename: graphene_epr.h5
+   SOC: False
+   polar: False
+   description: "Graphene, with 2D Coulomb cutoff and no SOC"
+   pseudopotential: C from Pseudo-Dojo
+   tags:
+      - norm-conserving
+      - LDA
+      - scalar-relativistic
+      - 2D cutoff
+      - cpu
+   tests:
+      bands:
+          - random-k
+          - uniform
+          - bands
+      phdisp:
+          - random-q
+          - uniform
+          - phdisp
+      ephmat:
+          - ephmat
+          - random-k
+          - random-q
+          - uniform
+
+epr4:
+   prefix: graphite
+   filename: graphite_epr.h5
+   SOC: False
+   polar: False
+   description: "Graphite, no SOC"
+   pseudopotential: C from Pseudo-Dojo
+   tags:
+      - norm-conserving
+      - LDA
+      - scalar-relativistic
+      - cpu
+   tests:
+      bands:
+          - random-k
+          - uniform
+          - bands
+      phdisp:
+          - random-q
+          - uniform
+          - phdisp
+      ephmat:
+          - ephmat
+          - random-k
+          - random-q
+          - uniform
+
+epr5:
+   prefix: gaas_uspp
+   filename: gaas_uspp_epr.h5
+   SOC: True
+   description: "GaAs with SOC + USPP"
+   pseudopotential: Ga and As from QE
+   tags:
+      - ultrasoft
+      - LDA
+      - fully-relativistic
+      - cpu
+   tests:
+      bands:
+          - random-k
+          - uniform
+          - bands
+      phdisp:
+          - random-q
+          - uniform
+          - phdisp
+      ephmat:
+          - ephmat
+          - random-k
+          - random-q
+          - uniform
+
+epr6:
+   prefix: fe
+   filename: fe_epr.h5
+   SOC: False
+   description: "Iron with LSDA"
+   pseudopotential: Fe from wannier90 example 
+   tags:
+      - norm-conserving
+      - pbe
+      - lsda
+      - cpu
+   tests:
+      bands:
+          - random-k
+          - uniform
+          - bands
+      phdisp:
+          - random-q
+          - uniform
+          - phdisp
+      ephmat:
+          - ephmat
+          - random-k
+          - random-q
+          - uniform
+
+epr7:
+   prefix: gan
+   filename: gan_epr.h5
+   SOC: False
+   description: "GaN with TDEP 2nd-order forceconstants at 300K"
+   pseudopotential: Ga and N from PseudoDojo
+   tags:
+      - scalar-relativistic
+      - pbesol
+      - norm-conserving
+      - cpu
+   tests:
+      bands:
+          - random-k
+          - uniform
+          - bands
+      phdisp:
+          - random-q
+          - uniform
+          - phdisp
+      ephmat:
+          - ephmat
+          - random-k
+          - random-q
+          - uniform
+
+epr8:
+   prefix: svo
+   filename: svo_epr.h5
+   SOC: False
+   description: "SrVO3 with DFT+U"
+   pseudopotential: GBRV PBEsol USPP 
+   tags:
+      - ultrasoft
+      - pbesol
+      - dft+U 
+      - cpu
+   tests:
+      bands:
+          - high-sym-k
+          - bands
+      phdisp:
+          - high-sym-q
+          - phdisp
+      ephmat:
+          - high-sym-k
+          - high-sym-q
+          - ephmat
+
+epr9:
+   prefix: si
+   filename: si_epr.h5
+   SOC: False
+   description: "Si with quadrupole correction"
+   pseudopotential: PBEsol from Pseudo-Dojo
+   tags:
+      - norm-conserving
+      - pbesol
+      - cpu
+      - quadrupole
+   tests:
+      bands:
+          - high-sym-k
+          - bands
+      phdisp:
+          - high-sym-q
+          - phdisp
+      ephmat:
+          - high-sym-k
+          - high-sym-q
+          - ephmat
+

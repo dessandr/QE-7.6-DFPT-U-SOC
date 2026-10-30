@@ -1,0 +1,7 @@
+PERT_SCRATCH: tmp
+source_link: https://caltech.box.com/shared/static/3xj9sknmt75aho66eyad1wwa6dat4s0d.zip 
+comp_info:
+    qe2pert:
+        exec: mpirun -np 2 qe2pert.x -npools 2
+    perturbo:
+        exec: mpirun -np 2 perturbo.x -npools 2

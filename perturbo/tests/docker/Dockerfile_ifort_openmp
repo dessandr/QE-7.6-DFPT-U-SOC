@@ -1,0 +1,27 @@
+# Use our pre-generated ifort MPI base image
+FROM perturbo/perturbo_suppl:ifort
+
+
+# Install of Perturbo
+# Here we suppose, that you have folder perturbo/
+# in the directory, where you build the image
+COPY . /opt/q-e-qe-7.2/perturbo
+# Copy make file for ifort from special folder
+RUN cp /opt/q-e-qe-7.2/perturbo/tests/make_files/make_ifort_openmp.sys /opt/q-e-qe-7.2/perturbo/make.sys
+WORKDIR /opt/q-e-qe-7.2/perturbo
+RUN make
+
+# Add path to QE, hdf5, qe2pert.x and perturbo.x executables in the list
+ENV PATH=/opt/hdf5/lib:${PATH}
+ENV PATH=/opt/q-e-qe-7.2/bin/:${PATH}
+ENV PATH="/opt/q-e-qe-7.2/perturbo/bin:${PATH}"
+ENV LD_LIBRARY_PATH=/opt/hdf5/lib:$LD_LIBRARY_PATH
+
+# Install perturbopy
+RUN pip install perturbopy
+
+# Run the tests after the start of container
+# Define work directory
+WORKDIR /opt/q-e-qe-7.2/perturbo/tests
+CMD ["python3", "run_tests_actions.py"]
+# CMD ["/bin/bash"]
