@@ -28,6 +28,27 @@ This directory contains several tools that may be useful for developers
   * `gen-emacs-mode`
   * `gen-emacs-mode.tcl`
 
+## PH response collection for qe2pert (Perturbo in `perturbo/`)
+
+- `collect_qe2pert_ph.py` (from qe-pert, unchanged; tests in
+  `test_collect_qe2pert_ph.py`) checks the PH dynamical matrices and
+  responses of a `ldisp` run and copies or links them into qe2pert's flat
+  `phdir` names: `prefix.dyn0`, `prefix.dynN.xml`, `prefix.dvscf_qN`,
+  `prefix.phsave/patterns.N.xml`, and with `--hubbard required` (default,
+  DFPT+U) `prefix.dnsbare_pattern_qN`, `prefix.dnsscf_qN`:
+
+  ```bash
+  python3 dev-tools/collect_qe2pert_ph.py --source out --dyn0 prefix.dyn0 \
+      --prefix prefix --output phdir --mode hardlink   # --hubbard none without U
+  ```
+
+  The PH run needs `fildvscf` and an XML `fildyn` (e.g. `'prefix.dyn.xml'`):
+  qe2pert does not read text dynamical matrices. A finished run with a text
+  `fildyn` can be completed by `recover=.true.` with the XML `fildyn`: done q
+  points only rewrite their dynamical matrices (the `dnsscf` export is
+  rewritten with identical content and the old copy kept as
+  `*.dnsscf.previous.N`; remove these before collecting).
+
 ## Obsolescent utilities
 - GPU utilities by Pietro Bonfà:
   * `get_device_props.py`

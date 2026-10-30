@@ -597,3 +597,63 @@ Fixture: new optional SOC_U_NIO_ECUTWFC and SOC_U_NIO_K (defaults unchanged).
 - Recommendation for tight tr2_ph: alpha_mix(1)=0.7, nmix_ph=12,
   alpha_mix_hub=1.0 (-43% work here). Defaults left unchanged. The ~1e-8 Ry
   Hubbard floor (hubbard_conv_thr 1d-8) is a separate issue, not addressed.
+- Finite q with the recommended setting (2026-10-27, jobs 894/895,
+  `../qe-7.6-pert-buildlogs/efield-investigation/qpt/batch-hm.sh`):
+  q = b1/2: 504 -> 254 iterations, ch_psi 68777 -> 33915 (-51%);
+  q = b1/3: 705 -> 374, 270922 -> 140934 (-48%). Dynamical matrix vs the
+  default-mixing runs max|dC| 4.0e-7 / 3.6e-7 (rel ~1e-6, frequencies within
+  6e-4 cm^-1, -q block included); supercell FD agreement unchanged
+  (1.26e-3/1.00e-3 and 1.18e-3/4.10e-3).
+
+## 2026-10-28: qe2pert/Perturbo port (user request)
+
+- `perturbo/`: the qe-pert tree (git-tracked files of `~/bin/qe-pert/perturbo`
+  at `ad6f027`: upstream Perturbo plus the noncollinear SOC+U qe2pert work,
+  without the committed `soc_u_build.*` build records). Build after
+  `make pw ph`: `cd perturbo/qe2pert-src && make qe2pert.x`,
+  `cd perturbo/pert-src && make perturbo.x` (or `make -C perturbo`).
+- QE 7.6 adaptations (all in `perturbo/`):
+  `make.sys` (7.6 `BASEMODS`/`PWOBJS` as PHonon, devXlib module path);
+  `lattice_data.f90` passes `ph_alpha` (1, the old internal value and that of
+  the Perturbo polar correction) to the 7.6 `rgd_blk`, whose Ewald parameter
+  is now an argument; `pw_atomic_wfc.f90` replaced by wrappers of
+  `atomic_wfc_acc` with the options of PW `atomic_wfc`/`atomic_wfc_nc_updown`
+  (Hubbard projectors as pw.x/ph.x of this tree); `ph_lr_orthoUwfc.f90` sets
+  `natomwfc = n_atom_wfc(...)` as 7.6 `lr_orthoUwfc`; `elph_matrix.f90` uses
+  the `fft_wave` module (`npwx` argument); `pw_s_psi.f90` drops the
+  unreachable gamma/real-space branches (`bec_type` lost its band
+  distribution); `pert-src/stack.c` (QE 7.3 `Modules/stack.c`; 7.6 removed
+  `remove_stack_limit`), added to both makefiles.
+- Bug that compiles silently: with `assume_isolated='2D'` QE 7.6
+  `init_vlocq` already adds `lr_Vlocq` to `vlocq`, so the 7.3-era
+  `cutoff_localq` call in `ph_dvqpsi_us_local.f90` and the `lr_Vlocq` term in
+  `ph_dvanqq.f90` double-counted it; both removed.
+- Audit 7.3 -> 7.6 of what qe2pert calls: all external (non-module) QE
+  procedures have unchanged argument lists; `read_file_new`, `read_wfc`,
+  `rgd_blk` body (apart from alph), `find_sym` (noncollinear), NLCC (in the
+  ph.x `fildvscf`, qe2pert uses addnlcc=.false.), local/nonlocal/USPP
+  routines (7.6 changes are refactors) need no change.
+- `dev-tools/collect_qe2pert_ph.py` (+ tests, from qe-pert) and a
+  `dev-tools/README.md` section: qe2pert needs `fildvscf` and an XML `fildyn`;
+  a finished text-`fildyn` run is completed by `recover=.true.` with the XML
+  name (responses unchanged, sha256; `dnsscf` re-exported identically with a
+  `.previous.1` copy).
+- A/B (`../qe-7.6-pert-buildlogs/qe2pert/`, jobs 951-957): one 7.6 data set
+  (pw.x, ph.x, pw2wannier90.x, wannier90 4.0.2) through qe-pert's qe2pert.x
+  (QE 7.3 libraries, XML copy patched by `patch_qe76_xml.py`) and this tree's
+  qe2pert.x; `cmp_h5.py`, global max|d|/max|a| of the e-ph datasets:
+
+  | case | electron/phonon/spin data | e-ph (`_epr.h5`) | e-ph (`_elph.h5`) |
+  |---|---|---|---|
+  | NiO SOC+U AFM, k=q=2^3 (6 irr. q, 8 via magnetic star, 2 antiunitary) | identical | 2.7e-7 | 2.9e-7 |
+  | GaAs SOC, polar (Perturbo epr1) | identical | 6.2e-6 | 4.9e-6 (As), 1.2e-7 (Ga) |
+  | graphene, 2D cutoff (epr3) | identical | 1.1e-7 | 1.1e-7 |
+  | graphene, 7.6 build without the 2D fix | identical | 4.1 | 4.4 |
+
+  NiO load-only (`QE2PERT_SOC_U_LOAD_ONLY=1`): both builds PASS 8 q, the 24
+  q-star roundtrips at ~1e-14. The remaining differences come from the
+  QE 7.3 vs 7.6 libraries, not from the qe2pert sources (for GaAs the qe2pert
+  sources are effectively identical): 7.3 and 7.6 pw.x give GaAs total
+  energies 1.2e-5 Ry apart on the same input (FR DOJO PPs with NLCC).
+- Not tested: collinear +U and USPP e-ph (Perturbo epr8 needs GBRV USPPs that
+  are not here), perturbo.x itself (built, not run).
