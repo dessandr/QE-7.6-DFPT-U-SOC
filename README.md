@@ -1,5 +1,92 @@
 ![q-e-logo](logo.jpg)
 
+## This branch: noncollinear/SOC DFPT+U and Perturbo
+
+Branch `soc-u-port` is Quantum ESPRESSO 7.6 with
+
+- **ph.x**: DFPT+U for noncollinear magnetic ground states, with or without
+  spin-orbit coupling, ported from qe-pert (QE 7.3);
+- **perturbo/**: Perturbo with the qe-pert SOC+U `qe2pert.x`, ported to QE 7.6.
+
+`main` is the unmodified QE 7.6. Validation runs and known issues:
+[docs/soc_u_port/PORT_STATUS.md](docs/soc_u_port/PORT_STATUS.md).
+
+### Build
+
+```bash
+./configure --with-hdf5=/path/to/hdf5 [options]   # HDF5: needed by Perturbo
+make pw ph pp                    # pp: pw2wannier90.x
+cd perturbo && make              # qe2pert.x, perturbo.x -> perturbo/bin
+```
+
+`perturbo/make.sys` uses the Intel flag `-qopenmp`; use `-fopenmp` with GNU
+compilers. Wannier90 is external.
+
+### New ph.x input variables (`&inputph`)
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `lhubbard_soc` | `.false.` | Enables DFPT+U for a noncollinear DFT+U ground state. Without it ph.x stops for such a ground state. |
+| `hubbard_conv` | `'potential'` | Convergence test of the Hubbard occupation response dN, required together with the Hxc test (`tr2_ph`). `'potential'`: max_I U_I \|dN_out - dN_in\| (Ry). `'relative'`: max \|dN_out - dN_in\| / max \|dN\| (the QE 7.3 test; may be unreachable when dN vanishes by symmetry). `'none'`: Hxc test only (diagnostic). |
+| `hubbard_conv_thr` | `sqrt(tr2_ph)` | Threshold of the Hubbard test. The Hubbard residual has a numerical floor of about 1e-8 Ry (NiO tests), so a tight `tr2_ph` (e.g. `1d-18`) needs a separate value such as `1d-7`. A value <= 0 selects the default. |
+| `hubbard_mix` | `'joint'` | `'joint'`: U*dN and the Hxc potential response in one Broyden vector (`nmix_ph`). `'linear'`: Broyden on Hxc only, linear mixing of dN (slower in the tests; kept as an option). |
+| `alpha_mix_hub` | `alpha_mix` (`'joint'`), 1 (`'linear'`) | Mixing step of the Hubbard block, 0 < `alpha_mix_hub` <= 2. A value <= 0 selects the default. |
+
+All but `lhubbard_soc` are used only with `lhubbard_soc=.true.`. Full
+descriptions are in [PHonon/Doc/INPUT_PH.def](PHonon/Doc/INPUT_PH.def).
+
+In the NiO tests, `alpha_mix(1)=0.7`, `nmix_ph=12`, `alpha_mix_hub=1.0`
+roughly halved the work of a tight `tr2_ph` run at Gamma and finite q,
+with phonon frequencies unchanged within convergence noise (finite q:
+dynamical matrix relative difference ~1e-6). The defaults are unchanged.
+
+```fortran
+&inputph
+  prefix = 'NiO', outdir = './out'
+  tr2_ph = 1.0d-18
+  lhubbard_soc = .true.
+  hubbard_conv_thr = 1.0d-7
+  alpha_mix(1) = 0.7, nmix_ph = 12, alpha_mix_hub = 1.0
+  ldisp = .true., nq1 = 2, nq2 = 2, nq3 = 2
+  fildyn = 'NiO.dyn.xml'          ! XML dynamical matrices: read by qe2pert
+  fildvscf = 'dvscf'              ! dvscf: read by qe2pert
+/
+```
+
+Scope with `lhubbard_soc=.true.` (ph.x stops otherwise):
+
+- magnetic noncollinear ground state, with or without SOC; fixed U_eff
+  (dU/du = 0), Dudarev `lda_plus_u_kind=0`, `HUBBARD {atomic}`, one Hubbard
+  manifold per atom, no orbital-resolved U;
+- norm-conserving pseudopotentials only (no USPP/PAW);
+- insulators: fixed occupations (no smearing or tetrahedra);
+- phonons at Gamma and finite q (`ldisp` without `lshift_q`) and static
+  `epsil`/`zeu`; not `elph`, Raman, `elop`, `fpol`, `only_wfc`,
+  `read_dns_bare`.
+
+### Perturbo (qe2pert)
+
+ph.x writes the Hubbard responses read by qe2pert (`dnsscf`,
+`dnsbare_pattern`) without extra input. After the ph.x run, collect the
+responses into qe2pert's flat `phdir`:
+
+```bash
+python3 dev-tools/collect_qe2pert_ph.py --source out --dyn0 NiO.dyn0 \
+    --prefix NiO --output phdir --mode hardlink    # --hubbard none without U
+```
+
+Run `qe2pert.x` with as many pools as MPI ranks (`mpirun -np N qe2pert.x -nk N`).
+Details: [dev-tools/README.md](dev-tools/README.md).
+
+qe2pert was checked against the qe-pert (QE 7.3) qe2pert on the same 7.6
+ph.x data: relative e-ph differences 2.9e-7 (NiO, SOC+U), 4.9e-6 (GaAs,
+SOC) and 1.1e-7 (graphene, 2D cutoff); all other qe2pert output identical. Not tested
+here: collinear +U and USPP e-ph, `perturbo.x` runs. PAW is not supported by
+qe2pert. The Perturbo regression data (`perturbo/tests/inputs`, `tests/refs`)
+are not included; copy them from upstream Perturbo to run its test suite.
+
+---
+
 This is the distribution of the Quantum ESPRESSO suite of codes (ESPRESSO:
 opEn-Source Package for Research in Electronic Structure, Simulation, and
 Optimization)
